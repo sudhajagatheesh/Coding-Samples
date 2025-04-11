@@ -12,7 +12,9 @@ My coursework at LSE is very stats/programming heavy (despite seeming like a qua
 2. PB130, PB230: R (covers all the fundamentals of R, plus regressions, multilevel models and some basic machine learning (supervised learning).
 
 ## (c) SSE Coding Assessment
-I undertook a Masters' level coursework at SSE (BE903: Data Science for Business). It covered machine learning and fundamentals of deep learning in Python, along with text analysis. 
+I undertook a Masters' level coursework at SSE (BE903: Data Science for Business). It covered machine learning and fundamentals of deep learning in Python, along with text analysis. The final project was an individual assessment that required us to predict house prices in Stockholm based on historic data, requiring me to do significant feature engineering and hyperparameter tuning. 
+
+The Jupyter notebook contains raw code, while the json file contains the final predicted scores. For a full breakdown of what I did, you can read my report which is also in the same folder.
 
 ## What I'll be adding:
 This repo is a work in progress. In the coming weeks, I'll be adding code from my independent research projects and group research projects conducted over the years + the datasets. 

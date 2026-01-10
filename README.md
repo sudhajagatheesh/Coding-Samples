@@ -7,7 +7,7 @@ The code for my thesis is broken down into *two* Jupyter codebooks.
 - If you want to jump straight into verifying the analysis results, the cleaned final dataset is also available in **Appendix A**, which you can use to run the models from Study 1, 2 and 3.
 
 ## (b) LSE Coding Assessments
-My coursework at LSE is very stats/programming heavy (despite seeming like a qualitative degree!) Files will be updated on a continuous basis, but here is a brief overview of the modules and programming languages:
+My coursework at LSE  Files will be updated on a continuous basis, but here is a brief overview of the modules and programming languages:
 1. DS202: Python (covers Machine Learning, Classification/Regression models, Supervised/Unsupervised Learning, and some text analysis)
 2. PB130, PB230: R (covers all the fundamentals of R, plus regressions, multilevel models and some basic machine learning (supervised learning).
 

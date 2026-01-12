@@ -1,0 +1,1004 @@
+---
+title: Spring Term Summative
+author: 38729
+format: html
+self-contained: true
+jupyter: python3
+engine: jupyter
+editor:
+  render-on-save: true
+  preview: true
+---
+```{python}
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import spacy
+from tqdm import tqdm  
+from scipy.stats import chi2_contingency
+from sklearn.decomposition import LatentDirichletAllocation
+from gensim.models.coherencemodel import CoherenceModel
+from sklearn.decomposition import TruncatedSVD
+from sklearn.preprocessing import normalize
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from wordcloud import WordCloud
+from lets_plot import *
+LetsPlot.setup_html()
+import plotly.express as px
+import pyLDAvis
+import pyLDAvis.lda_model
+from scipy.sparse import csr_matrix
+from scipy import stats
+import matplotlib.pyplot as plt
+
+# Load spaCy stopwords
+nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])  # Disable unnecessary components for speed
+stopwords = nlp.Defaults.stop_words
+```
+
+## Part 1: Measuring Document Similarity
+
+To explore how similar different posts were across mental health subreddits, I started by converting the cleaned text into **TF-IDF vectors**. This gave me a basic representation of the words used in each post, based on how often they appear.
+
+I then tried using **KMeans clustering** and **UMAP** to group and visualise the posts. But the results weren’t very promising, as the silhouette score was very low (0.004), and the clusters overlapped a lot. It became clear that just looking at word frequency wasn’t enough to separate the posts in any meaningful way.
+
+Although UMAP helped reduce the number of dimensions for plotting, it didn’t perform well here. That’s likely because TF-IDF creates a very sparse dataset, and UMAP (like PCA) doesn’t handle that kind of data particularly well. The lack of clear groupings backed this up and encouraged me to try more context-aware models later on, like BERT.
+
+To explore how similar different subreddits were to each other, I looked at:
+- **Lexical overlap** (how many words they shared)
+- **Bigrams** (two-word phrases like “feel alone” or “need help”)
+- **Co-occurrence networks** (visualising which words tend to appear together)
+- **Token count distributions** (how long or short posts tended to be)
+
+### What I Found
+
+- `r/depression` and `r/anxiety` used a lot of the same emotional vocabulary — words like *feel*, *life*, and *know* were common across both.
+- `r/suicidewatch` and `r/lonely` stood out with more unique wording, suggesting different emotional patterns or styles of writing.
+- The co-occurrence networks (like the one I made for `r/depression`) showed strong links between emotionally loaded words, helping visualise the internal structure of posts.
+- Post length also varied — for example, `r/lonely` posts were often much shorter and more to the point.
+
+All in all, even though the same kinds of words were used across subreddits, the way people expressed themselves, like the tone, structure, and rhythm of posts was often quite different. This points to a deeper emotional or psychological structure behind online mental health writing, beyond surface-level word use.
+
+---
+
+## Data Preprocessing
+
+## 1. Data Cleaning and Preprocessing
+
+- Before exploring similarity or structure in the text, I needed to ensure the data was in a consistent and meaningful format. Each Reddit post includes both a title and a longer text field (`selftext`), so I combined these into a single `text` column to give each document a fuller narrative.
+
+- To avoid including extremely short or empty posts, I removed any entries with fewer than 20 characters in the combined field. This helps ensure that the clustering model isn’t driven by one-liners or noise.
+
+- Reddit users often repeat letters for emphasis (e.g. "sooo tired", "aaand then"). While expressive, these forms introduce unnecessary variation into the vocabulary. To address this, I applied a regular expression to compress sequences of more than two repeated characters. This step isn’t part of the standard pipeline from the class notebook, but it seemed important here given the informal tone of Reddit posts.
+
+- I then lemmatised the text using spaCy’s English model. Lemmatisation helps group together different forms of the same word (e.g. “feeling” and “feel”) while removing stopwords keeps the focus on semantically important content. This is standard in unsupervised text analysis (e.g. Jockers, 2013).
+
+- After reviewing the text, I also removed a few common Reddit-specific tokens such as “idk”, “lol”, and “pls”. These tend to appear frequently but don’t contribute meaningfully to topic modelling or similarity detection.
+
+- Finally, I cleaned and lowercased the subreddit labels to ensure they were consistent. I also calculated a `token_count` variable for each post, which I later used to inspect differences in post length across subreddits.
+
+- This preprocessing pipeline builds on the class example but is tailored to the Reddit context. The additional normalisation and filtering steps were taken as there are specific challenges of working with informal online writing.
+
+```{python}
+import os
+import pandas as pd
+
+folder_path = os.path.expanduser("~/Desktop/DATA/Original Reddit Data/Labelled Data")
+
+# Load and merge all CSVs
+df_list = []
+for file in os.listdir(folder_path):
+    if file.endswith(".csv"):
+        df = pd.read_csv(os.path.join(folder_path, file))
+        df['source_file'] = file
+        df_list.append(df)
+
+# Combine all into one DataFrame
+full_df = pd.concat(df_list, ignore_index=True)
+```
+
+```{python}
+# Combine text columns
+full_df['text'] = full_df['title'].fillna('') + " " + full_df['selftext'].fillna('')
+full_df = full_df[full_df['text'].str.strip().str.len() > 20].copy()
+
+#  Remove repeated letters BEFORE spaCy
+import re
+def reduce_repeats(text):
+    return re.sub(r'(.)\1{2,}', r'\1\1', text)  # aaand → aand
+
+full_df['text'] = full_df['text'].apply(reduce_repeats)
+
+# spaCy lemmatization + stopword removal
+from tqdm.auto import tqdm
+tqdm.pandas()
+import spacy
+nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
+stopwords = nlp.Defaults.stop_words
+
+def preprocess(text):
+    doc = nlp(text.lower())
+    tokens = [
+        token.lemma_ for token in doc
+        if token.is_alpha and token.lemma_ not in stopwords and len(token) > 2
+    ]
+    return " ".join(tokens)
+
+full_df['clean_text'] = full_df['text'].progress_apply(preprocess)
+
+# Reddit slang filtering
+common_reddit_noise = {'idk', 'lol', 'pls', 'tbh', 'tho', 'lmao'}
+def remove_noise_words(text):
+    return ' '.join([word for word in text.split() if word not in common_reddit_noise])
+
+full_df['clean_text'] = full_df['clean_text'].apply(remove_noise_words)
+
+# subreddit names + token count
+full_df['subreddit'] = full_df['subreddit'].str.strip().str.lower()
+full_df['token_count'] = full_df['clean_text'].apply(lambda x: len(x.split()))
+
+# Preview
+full_df[['subreddit', 'clean_text']].sample(5)
+```
+
+## 2. Exploring Structure via TF-IDF and UMAP
+
+- To explore whether posts from different subreddits cluster naturally in semantic space, I first vectorised the cleaned text using TF-IDF. This method weights terms based on their frequency in a given document relative to their frequency in the full corpus, helping highlight words that are distinctive for individual posts (Manning et al., 2008).
+
+- I limited the vocabulary to the 5,000 most frequent tokens to reduce noise. This step also helps ensure that rare, low-information words don’t dominate the similarity space.
+
+- I then applied UMAP (Uniform Manifold Approximation and Projection) to reduce the high-dimensional TF-IDF matrix to two dimensions for visualisation. UMAP is a non-linear dimensionality reduction technique that preserves local structure, making it useful for visualising dense, real-world text corpora (McInnes et al., 2018).
+
+- In the resulting UMAP plot, I coloured each point by its subreddit of origin. The idea here was to visually inspect whether different subreddit communities express themselves in ways that produce clear, separable groupings based on lexical content.
+
+- To quantify this, I computed the silhouette score using the 2D UMAP coordinates and the original subreddit labels. A silhouette score measures how similar each point is to its own cluster compared to other clusters. In this case, the score was **-0.044**, suggesting that posts from different subreddits do not form clearly separated groups in the reduced space.
+
+- This finding aligns with the intuition that while subreddit labels reflect community structure, the **actual language used to describe mental health experiences overlaps substantially** across communities. Many users may describe similar feelings or events, regardless of which subreddit they post in.
+
+However, it also points to something methodologically relevant: that UMAP may not be the most well suited for this kind of data. I think this is actually quite revealing. It suggests that the underlying emotional content might be more shared across subreddits than I expected. That also means unsupervised methods like clustering based on text alone might not be able to "recover" subreddit labels, which is kind of the point. If the subreddits are different in name but not in narrative structure, then maybe I should focus on what themes people talk about rather than where they post.
+
+```{python}
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Vectorise the cleaned posts
+vectorizer = TfidfVectorizer(max_features=5000)
+X_tfidf = vectorizer.fit_transform(full_df['clean_text'])
+
+import umap.umap_ as umap
+
+# Reduce to 2D
+umap_model = umap.UMAP(n_neighbors=15, min_dist=0.3, metric='cosine', random_state=42)
+X_umap = umap_model.fit_transform(X_tfidf)
+```
+
+```{python}
+# Coordinates
+full_df['umap_x'] = X_umap[:, 0]
+full_df['umap_y'] = X_umap[:, 1]
+
+import plotly.express as px
+
+fig = px.scatter(
+    full_df,
+    x='umap_x',
+    y='umap_y',
+    color='subreddit',
+    hover_data=['title', 'Label'],
+    opacity=0.7,
+    title="Reddit Post Clustering by Subreddit via UMAP"
+)
+fig.update_traces(marker=dict(size=5))
+fig.update_layout(template='plotly_white')
+fig.show()
+```
+
+### What does this mean?
+
+Hmm, interesting! When I plotted the posts in UMAP space, coloured by subreddit, I expected to see at least some spatial separation like for example maybe clusters of posts from r/depression in one corner, or r/anxiety somewhere else. But what I actually saw was something much more blended. Posts from all five subreddits are spread pretty evenly across the space.
+
+This matches what the silhouette score already hinted at. The language people use to describe their mental health doesn’t seem to fall neatly into subreddit-shaped clusters. Even though the subreddit labels are technically there, they don’t appear to be the main thing shaping how people talk. For example, a post from r/mentalhealth talking about suicidal ideation is right next to others from r/depression or r/lonely. Basically, the boundaries between communities are seeming more fluid!
+
+ **NB: UMAP has limitations with sparse, high-dimensional data**! like TF-IDF. Because most of the document-term matrix is zeros (i.e., most words don't appear in most posts), UMAP struggles to preserve meaningful neighbourhoods in the low-dimensional projection. So part of the blending could be methodological, not just linguistic. Still, even with that in mind, the lack of clear structure adds weight to the idea that subreddit identity alone isn’t enough to explain how people narrate distress online.
+
+```{python}
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import LabelEncoder
+
+# Encode subreddit labels
+le = LabelEncoder()
+subreddit_labels = le.fit_transform(full_df['subreddit'])
+
+# Compute silhouette score based on 2D UMAP layout
+sil_score = silhouette_score(X_umap, subreddit_labels, metric='euclidean')
+print(f"Silhouette Score (based on subreddit labels): {sil_score:.3f}")
+```
+
+## 2.2 Lexical and Structural Overlap Between Subreddits
+
+- After visualising the semantic spread of posts using UMAP, I wanted to understand whether the overlap I observed between subreddits was also reflected in the underlying vocabulary. To explore this, I computed two similarity matrices: one based on the overall set of tokens used in each subreddit, and one based on bigrams.
+
+- The first matrix compares lexical overlap between subreddits using Jaccard similarity, which captures how much of the vocabulary is shared. As the heatmap shows, there's moderate overlap between communities like r/depression, r/anxiety, and r/mentalhealth (Jaccard scores around 0.38–0.40), while r/lonely has the most distinct vocabulary.
+
+- This makes intuitive sense. While the core topics may be similar, each subreddit may frame experiences differently, emphasising slightly different aspects of distress or coping. It also supports the earlier UMAP plot, where posts from different communities were distributed across the same space with no clear boundaries.
+
+- To add a structural layer, I repeated the same analysis using bigrams. Here, the overlap was even lower. Bigrams capture short phrases rather than individual terms, and the drop in similarity suggests that communities may differ more in how they phrase things than in the actual words they use.
+
+- I also looked at token count distributions across subreddits. While most posts had similar lengths, r/depression and r/mentalhealth had slightly longer responses on average, which might reflect more detailed narratives or extended descriptions of experience.
+
+- Taken together, these results suggest that while subreddits vary in emphasis and expression, they still operate within a shared vocabulary. This further supports the idea that Reddit users often draw from a common linguistic toolkit to describe mental health — even if the community structures are formally separate.
+
+```{python}
+# Already preprocessed text 
+full_df['token_count'] = full_df['clean_text'].apply(lambda x: len(x.split()))
+import seaborn as sns
+plt.figure(figsize=(10,6))
+sns.boxplot(x='subreddit', y='token_count', data=full_df)
+plt.xticks(rotation=45)
+plt.title("Token Count Distribution per Subreddit")
+plt.show()
+
+from collections import Counter
+
+# Build token frequency dict per subreddit
+subreddit_tokens = {}
+
+for subreddit in full_df['subreddit'].unique():
+    tokens = " ".join(full_df[full_df['subreddit'] == subreddit]['clean_text']).split()
+    subreddit_tokens[subreddit] = Counter(tokens)
+
+# Preview top tokens for one subreddit
+subreddit_tokens['depression'].most_common(10)
+```
+
+### Comparing Similarity Between Subreddits and Thematic Labels
+
+To investigate whether different communities and annotated themes use language in distinct ways, I conducted a series of similarity analyses. These included lexical and bigram overlap measures across both subreddit groups and annotated label categories.
+
+#### 1. Lexical Overlap Between Subreddits
+
+The Jaccard similarity matrix based on unigram vocabulary showed moderate overlap between most subreddit communities. For instance, `r/depression` and `r/mentalhealth` had the highest similarity (0.40), while `r/lonely` stood out with the lowest overlap, often below 0.22. This suggests that while there is a shared emotional vocabulary across communities, certain subreddits exhibit more idiosyncratic linguistic patterns. Posts in `r/lonely`, for example, may reflect more isolated or niche modes of self-expression.
+
+#### 2. Bigram Overlap Between Subreddits
+
+The comparison of bigram usage revealed even lower overlap, with Jaccard scores generally ranging between 0.02 and 0.06. This indicates that while users may rely on a common set of words, they structure their experiences in markedly different ways. The phrasing, sequencing, and narrative style of posts varies significantly across communities, reflecting subreddit-specific discourse norms.
+
+#### 3. Lexical Overlap Between Thematic Labels
+
+Unlike the subreddit groupings, the annotated labels (e.g., *Drug and Alcohol*, *Personality*, *Trauma and Stress*) showed a relatively higher degree of lexical overlap, with values clustering around 0.36 to 0.39. This reinforces the idea that the thematic categories are not entirely lexically distinct. Posts labeled with different themes may still draw on a shared vocabulary, pointing to overlapping narrative and emotional terrains.
+
+---
+
+### Implications for Further Analysis
+
+Taken together, these findings highlight a critical limitation of surface-level similarity metrics: they can capture lexical commonality, but not the deeper semantic and emotional distinctions embedded in narrative form. The overlap in vocabulary does not necessarily mean the underlying experiences or framing are the same.
+
+These results motivate a shift toward methods that go beyond word frequency. In Part 2, I will use the same dataset, and turn to contextual embeddings and unsupervised clustering to explore whether latent structure in the text reflects deeper psychological or thematic patterns that are not captured by lexical analysis alone.
+
+```{python}
+# Build vocab overlap matrix
+subreddits = list(subreddit_tokens.keys())
+vocab_overlap = pd.DataFrame(index=subreddits, columns=subreddits)
+
+for sub1 in subreddits:
+    for sub2 in subreddits:
+        vocab1 = set(subreddit_tokens[sub1].keys())
+        vocab2 = set(subreddit_tokens[sub2].keys())
+        intersection = vocab1 & vocab2
+        union = vocab1 | vocab2
+        vocab_overlap.loc[sub1, sub2] = len(intersection) / len(union)
+
+# Convert to float
+vocab_overlap = vocab_overlap.astype(float)
+
+# Plot
+plt.figure(figsize=(8, 6))
+sns.heatmap(vocab_overlap, annot=True, fmt=".2f", cmap="Blues")
+plt.title("Lexical Overlap Between Subreddits")
+plt.show()
+```
+
+```{python}
+import nltk
+nltk.download('punkt')  
+from nltk import bigrams
+
+# Get bigrams per subreddit
+subreddit_bigrams = {}
+for subreddit in full_df['subreddit'].unique():
+    text = " ".join(full_df[full_df['subreddit'] == subreddit]['clean_text'])
+    bigram_tokens = list(bigrams(text.split()))
+    subreddit_bigrams[subreddit] = set([" ".join(b) for b in bigram_tokens])
+
+# Build Jaccard similarity matrix of bigrams
+bigram_overlap = pd.DataFrame(index=subreddit_bigrams.keys(), columns=subreddit_bigrams.keys())
+
+for s1 in subreddit_bigrams:
+    for s2 in subreddit_bigrams:
+        set1, set2 = subreddit_bigrams[s1], subreddit_bigrams[s2]
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        bigram_overlap.loc[s1, s2] = intersection / union
+
+# Plot
+plt.figure(figsize=(8, 6))
+sns.heatmap(bigram_overlap.astype(float), annot=True, fmt=".2f", cmap="Purples")
+plt.title("Shared Bigrams Between Subreddits (Jaccard Similarity)")
+plt.show()
+```
+
+```{python}
+from collections import Counter
+import pandas as pd
+
+# Build vocab sets
+label_tokens = {}
+for label in full_df['Label'].unique():
+    text = " ".join(full_df[full_df['Label'] == label]['clean_text'])
+    label_tokens[label] = set(text.split())
+
+# Jaccard similarity
+labels = list(label_tokens.keys())
+jaccard = pd.DataFrame(index=labels, columns=labels)
+for l1 in labels:
+    for l2 in labels:
+        intersection = label_tokens[l1] & label_tokens[l2]
+        union = label_tokens[l1] | label_tokens[l2]
+        jaccard.loc[l1, l2] = len(intersection) / len(union)
+
+jaccard = jaccard.astype(float)
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(jaccard, annot=True, fmt=".2f", cmap='BuPu')
+plt.title("Jaccard Similarity Between Label Groups")
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.show()
+```
+
+## 2.3 Visualising Co-occurrence Patterns in r/depression
+
+- To move beyond unigram-level overlap and explore how words tend to appear together within posts, I built a co-occurrence network for r/depression. This was based on a simple windowed approach: if two words appeared within three words of each other in a post, that counted as a co-occurrence.
+
+- I then filtered the resulting network to include only pairs of words that co-occurred more than 10 times. This helps remove noise and focuses the analysis on more stable, repeated associations.
+
+- After building the network, I removed nodes with very few connections, which mostly consisted of low-frequency or context-specific terms. This cleaned-up graph shows the main co-occurrence structure that users in r/depression draw on when describing their experiences.
+
+- To explore semantic groupings, I applied Louvain community detection to identify groups of words that frequently co-occur together. Visually, these show up as coloured clusters in the graph. Some of these groupings are emotionally intuitive. Like for instance, one cluster includes “feel”, “want”, and “life”, while another groups “friend”, “talk”, and “time”.
+
+- What I found most interesting was how central some general-purpose words were. Terms like “feel”, “know”, and “like” act as connective hubs across multiple semantic contexts. This suggests that while individual posts may be diverse, they’re built on a relatively small set of core affective terms.
+
+- This kind of network visualisation is useful for seeing not just what people are talking about, but how those meanings are structured and related. It also supports the earlier findings. Basically that posts in r/depression aren’t clustered into rigid themes, but flow through loosely structured emotional vocabularies.
+
+```{python}
+import networkx as nx
+import matplotlib.pyplot as plt
+from collections import defaultdict
+from itertools import combinations
+import community as community_louvain  
+
+# STEP 1: Build co-occurrence dictionary
+co_occurrence = defaultdict(int)
+target_sub = 'depression'
+window_size = 3
+
+for text in full_df[full_df['subreddit'] == target_sub]['clean_text']:
+    words = text.split()
+    for i in range(len(words)):
+        for j in range(i+1, min(i+window_size, len(words))):
+            w1, w2 = sorted([words[i], words[j]])
+            if w1 != w2:
+                co_occurrence[(w1, w2)] += 1
+
+# STEP 2: Filter by strength
+co_occurrence = {k: v for k, v in co_occurrence.items() if v > 10}
+
+# STEP 3: Create graph
+G = nx.Graph()
+for (w1, w2), freq in co_occurrence.items():
+    G.add_edge(w1, w2, weight=freq)
+
+# STEP 4: Remove low-degree clutter
+low_degree_nodes = [node for node, degree in G.degree() if degree < 3]
+G.remove_nodes_from(low_degree_nodes)
+
+# STEP 5: Community detection
+partition = community_louvain.best_partition(G)
+node_colors = [partition[node] for node in G.nodes()]
+
+# STEP 6: Draw the slay
+plt.figure(figsize=(14, 12))
+pos = nx.spring_layout(G, k=0.3, iterations=100)
+
+nx.draw_networkx_nodes(
+    G, pos,
+    node_size=[G.degree(n)*120 for n in G.nodes()],
+    node_color=node_colors,
+    cmap='tab10',
+    alpha=0.85
+)
+nx.draw_networkx_edges(G, pos, width=0.6, alpha=0.35)
+nx.draw_networkx_labels(G, pos, font_size=10, font_family='sans-serif')
+
+plt.title(f"Word Co-occurrence Network in r/{target_sub}", fontsize=16)
+plt.axis('off')
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+## Part 2 — Unsupervised Learning: Exploring Self-Concept in Mental Health Narratives
+
+### First of all, why should I study the RQ I'm choosing?
+
+Although this project began with the assumption that subreddit boundaries might shape how people talk about their mental health, the results suggest something more nuanced.
+
+Emotion and distress don’t always fall into neat categories, right. Research in psychology has long suggested that affective experience is better understood as a spectrum or space, something that shifts and blends, rather than a set of fixed boxes (Russell, 1980; Barrett, 2006). This helps explain why the posts I studied didn’t cluster cleanly: people were often talking about similar feelings, even if they were posting in different communities (aaand, UMAP isn't really the best for this kind of data. But point remains, the dimensionality and nature of this dataset requires something different)
+
+At the same time, online platforms like Reddit encourage users to sort themselves into subreddits, which can create the appearance of separation. But just because communities are defined by labels doesn’t mean their language is semantically distinct! In practice, the way people write about their struggles, especially when those struggles are emotional or existential, often draws from a shared set of words and metaphors.
+
+So while subreddit names reflect community identity and moderation structure, they don’t necessarily reflect deep differences in the way people narrate their mental health experiences. This project builds on that insight, shifting from trying to label communities to exploring the underlying emotional and thematic patterns that run through their posts (Andalibi & Forte, 2018).
+
+### Research Question
+
+**RQ: How do users across mental health subreddits differentially narrate agency and self-concept in relation to their symptoms?**
+
+This question is grounded in narrative psychology and builds on the idea that mental health experiences are not just communicated through symptoms, but through shifts in language, tone, and self-positioning. I am particularly interested in how clusters of posts reflect differing affective states and thematic focus (e.g., trauma, self-efficacy, hopelessness).
+
+---
+
+### Features Used & Feature Engineering
+
+- **Cleaned post text** (title + selftext), lemmatized and filtered using spaCy
+- **TF-IDF vectors** as a baseline lexical representation
+- **Sentence-BERT embeddings** (via `all-MiniLM-L6-v2`) to capture contextual and emotional nuance
+- Feature engineering included:
+  - Removing repeated characters (e.g., “soooo”) to reduce noise
+  - Filtering informal Reddit slang (e.g., “idk”, “lmao”)
+  - Token count per post for potential follow-up analyses on verbosity or linguistic density
+
+---
+
+### Methods Applied
+
+#### Baseline: TF-IDF + KMeans + UMAP
+- Initial clustering using TF-IDF revealed overlapping vocabulary but poor cluster separation (silhouette score = 0.004).
+- Visualizations showed that lexical similarity alone didn’t meaningfully segment posts by theme or tone.
+
+#### Final Method: Sentence-BERT + KMeans
+- Sentence-BERT embeddings capture word meaning in context, ideal for emotionally complex, non-linear language like that in Reddit posts.
+- KMeans clustering over BERT vectors revealed **two distinct clusters** with strong internal coherence.
+- Keyness analysis (G² log-likelihood) revealed semantically and affectively distinct terms across clusters (e.g., *“loneliness*”)
+
+## Hypotheses
+
+To guide our exploration using unsupervised learning, I propose the following theoretically grounded hypotheses:
+
+### H1: Affective Language Differentiation  
+Clusters will differ significantly in the presence of affective language (e.g., *feel*, *panic*, *bad*), reflecting underlying emotional states such as anxiety, hopelessness, or irritability.
+
+> *Justification:* Prior research in computational psychology (e.g., Pennebaker et al., 2015) suggests that affective word use can distinguish between individuals experiencing different mental health conditions.
+
+---
+
+### H2: Lexical Diversity and Trauma Discourse  
+Clusters associated with trauma and addiction-related discourse (e.g., “drug,” “die,” “friend,” “addiction”) will exhibit higher lexical diversity (type-token ratio) than clusters focused on general anxiety or sadness.
+
+> *Justification:* Trauma narratives are often more fragmented and less emotionally repetitive than ruminative posts (Brewin, 2001), suggesting greater linguistic variability.
+
+---
+
+### H3: Subreddit-Topic Overlap  
+The distribution of subreddit labels across clusters will be significantly non-random, indicating that subreddit communities are partially structured by distinct topical and psychological concerns.
+
+> *Justification:* If clusters are meaningful, they should capture latent themes that align (though not perfectly) with subreddit-level curation, supporting the external validity of the clustering.
+
+### Baseline: TF-IDF + KMeans Clustering
+
+TF-IDF provides a simple lexical vectorization, which serves as a reference model for unsupervised clustering.
+
+	•	Step 1: Vectorize text with TfidfVectorizer (max_features=5000)
+	•	Step 2: Reduce dimensions with TruncatedSVD (100 components)
+	•	Step 3: Cluster with KMeans (k determined via elbow/silhouette)
+
+```{python}
+# TF-IDF baseline setup
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+from sklearn.cluster import KMeans
+
+# Vectorise
+tfidf = TfidfVectorizer(max_features=5000)
+X_tfidf = tfidf.fit_transform(full_df['clean_text'])
+
+# Reduce
+svd = TruncatedSVD(n_components=100)
+X_reduced = svd.fit_transform(X_tfidf)
+
+# Cluster
+kmeans = KMeans(n_clusters=5, random_state=42)
+clusters = kmeans.fit_predict(X_reduced)
+
+# Add to dataframe
+full_df['tfidf_cluster'] = clusters
+```
+
+### Baseline Results: TF-IDF Cluster Interpretation
+•	Visualise clusters with UMAP or PCA (just to see what we're working with! This also may show us limitations of the methods we're using, which is useful since it's an early stage)
+•	Examine top words per cluster
+•	Assess silhouette score and cluster coherence
+
+Limitations:
+	•	Misses semantic nuance and phrase-level meaning
+	•	Similar meanings with different words (e.g. “trapped” vs. “suffocated”) are treated as unrelated
+
+```{python}
+# Reduce to 2D for plotting
+umap_model = umap.UMAP(n_neighbors=15, min_dist=0.1, metric='cosine', random_state=42)
+X_2d = umap_model.fit_transform(X_reduced)
+
+# Add to df
+full_df['umap_1'] = X_2d[:, 0]
+full_df['umap_2'] = X_2d[:, 1]
+
+# plot
+plt.figure(figsize=(10, 8))
+sns.scatterplot(
+    x='umap_1', y='umap_2',
+    hue='tfidf_cluster',
+    data=full_df,
+    palette='tab10',
+    alpha=0.6,
+    s=60
+)
+plt.title('TF-IDF Clusters Visualised with UMAP')
+plt.legend(title='Cluster', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+```
+
+Interesting! I can see here that despite some overlap in lexical structure, the clusters *do* diverge meaningfully in their emotional content. Some emphasise panic and urgency (e.g., Cluster 4), while others have themes of despair and disconnection (e.g., Cluster 0). 
+
+**This supports H1, suggesting that affective language can distinguish between latent clusters within mental health narratives.**
+
+```{python}
+kmeans = KMeans(n_clusters=5, random_state=42)
+tfidf_labels = kmeans.fit_predict(X_tfidf)
+
+# Store in your dataframe for future use
+full_df['tfidf_cluster'] = tfidf_labels
+
+# Get top words per cluster
+def get_top_terms_per_cluster(tfidf_matrix, labels, vectorizer, top_n=10):
+    terms = vectorizer.get_feature_names_out()
+    cluster_terms = {}
+
+    for cluster_num in np.unique(labels):
+        # Mean TF-IDF score per term in the cluster
+        cluster_center = tfidf_matrix[labels == cluster_num].mean(axis=0)
+        top_idx = np.asarray(cluster_center).argsort()[0][-top_n:][::-1]
+        cluster_terms[cluster_num] = [terms[i] for i in top_idx]
+
+    return cluster_terms
+
+top_terms = get_top_terms_per_cluster(X_tfidf, tfidf_labels, tfidf, top_n=10)
+for cluster, words in top_terms.items():
+    print(f"\nCluster {cluster} Top Terms:\n", ", ".join(words))
+```
+
+```{python}
+from sklearn.metrics import silhouette_score
+
+# Calculate Silhouette Score
+sil_score = silhouette_score(X_tfidf, tfidf_labels)
+print(f"Silhouette Score for TF-IDF + KMeans: {sil_score:.3f}")
+```
+
+## 3. TF-IDF Clustering Results: Evaluation Against Hypotheses
+
+he Silhouette Score for our TF-IDF + KMeans clustering was 0.004, indicating minimal separation between clusters (this is a super low score!). This suggests that the feature space constructed by TF-IDF does not meaningfully distinguish between underlying latent groupings of posts.
+
+This result reinforces the hypothesis that traditional bag-of-words vectorization struggles to capture deeper semantic nuances or contextual meaning in mental health discourse on Reddit.
+
+After fitting a KMeans clustering model on the TF-IDF vectors (k=5), I visualised the resulting clusters using UMAP. 
+
+While the UMAP plot showed some local structure, the overall separation between clusters was weak. This was confirmed by the silhouette score, which was extremely low (0.004). In other words, the model did not identify groups that were particularly cohesive or distinct in vector space.
+
+**NB: I need to mention again, the limitations of UMAP on sparse matrices (like the one we have). UMAP relies on distance metrics that can behave unpredictably when working with extremely sparse data, such as TF-IDF vectors. However, because I used UMAP for visualisation rather than modelling or inference, I proceeded with it after vectorisation.**
+
+Despite the weak clustering structure, I examined the top TF-IDF terms associated with each cluster to explore whether latent thematic or emotional patterns were still detectable. This allowed me to reflect on my original hypotheses:
+
+### H1: Affective Language Differentiation  
+**Prediction:** Clusters would differ in their use of emotionally loaded terms (e.g., *feel*, *panic*, *bad*).
+
+**Finding:** This hypothesis is supported. While the clusters overlap in vector space, their top words suggest distinct emotional framings. Cluster 0 is characterised by general distress and disconnection (“feel”, “help”, “bad”, “thought”), while Cluster 4 includes anxiety-related terms like “panic” and “attack”. These affective terms offer insight into the underlying emotional states shaping each group’s narrative.
+
+### H2: Lexical Diversity and Trauma Discourse  
+**Prediction:** Clusters focused on trauma or addiction (e.g., those mentioning “drug”, “die”, “addiction”) would show higher lexical diversity.
+
+**Finding:** Partially supported. Cluster 1 included several trauma- and addiction-related terms, which contrasts with the more repetitive, ruminative tone seen in other clusters. While I have not yet calculated type-token ratios by cluster, the vocabulary in Cluster 1 suggests higher specificity and possibly greater lexical variety. Further analysis is needed to confirm this.
+
+### H3: Subreddit–Topic Overlap  
+**Prediction:** Clusters would align at least partially with subreddit labels, indicating meaningful thematic groupings across communities.
+
+**Finding:** Not supported. The subreddit labels were not strongly predictive of cluster membership. Posts from different subreddits were distributed across all five clusters, and subreddit identity did not appear to be a strong organising principle in the clustering process. This is consistent with earlier findings from the UMAP visualisation, where subreddit-labelled posts were widely dispersed.
+
+### Summary  
+The TF-IDF clustering results indicate that while the posts do not form strong, separable clusters in the vector space, the top words reveal meaningful affective and thematic variation. This supports the decision to move beyond TF-IDF and explore additional unsupervised methods like LDA, LSA, and BERT, which may better capture the continuous, contextual nature of mental health narratives.
+
+## Moving on, why Not Classic Topic Modelling?
+
+As part of my initial exploration, I considered using classic topic modelling techniques such as Latent Dirichlet Allocation (LDA) and Latent Semantic Analysis (LSA). These models are widely used in text analysis to identify latent themes based on patterns of word co-occurrence.
+
+However, I chose not to rely on these models in the final analysis. Both LDA and LSA are based on sparse, bag-of-words representations of text, which makes them poorly suited to capturing the kind of emotional nuance, ambiguity, and context-dependence found in Reddit mental health posts. They also assume that documents can be grouped into neatly separable topics, which didn't align with the patterns I observed in my data — where expressions of distress often blended together across thematic and linguistic lines. 
+
+I did attempt LDA, however, and the scores were insignificant too. This exploration wasn't included in the final Qmd.
+
+## Why I Shifted to Contextual and Structure-Aware Methods
+
+Instead of forcing topic structures that didn’t fit the data, I approached the analysis in three complementary ways:
+
+- **First**, I used TF-IDF and KMeans as a baseline. While this approach uncovered some useful top terms, the silhouette score was extremely low (0.004), indicating that the clusters were not well separated.
+
+- **Second**, I pivoted to **Sentence-BERT**, a transformer-based model that generates dense, contextual embeddings for each post. Unlike TF-IDF or topic models, BERT accounts for sentence structure, tone, and word meaning in context. This made it much more appropriate for capturing the kinds of narrative patterns and emotional shifts central to my research question.
+
+- **Third**, I incorporated corpus linguistics tools to explore local structure without relying on global clusters, mainly, **Keyness analysis** using log-likelihood helped me identify which words were significantly more common in one group than another (e.g., across subreddits or BERT-based clusters). This allowed for interpretable, statistically grounded comparisons without requiring assumptions about topic structure.
+
+---
+
+Rather than relying on models that assume discrete, well-separated topics, I used a combination of contextual embeddings and exploratory corpus methods to uncover the structure of the dataset. This approach was better aligned with both the data itself and my theoretical interest in how users narrate affect, agency, and distress online.
+
+- LDA and LSA look at what words co-occur, but not how they're used.
+- BERT captures meaning at the sentence level, like accounting for tone, ambiguity, and emotional framing.
+- Keyness allowed for interpretable insights into how language shifts between communities and clusters, without assuming those clusters had to be clean or linearly separable.
+
+This decision was grounded both in empirical results and in research showing that affective discourse is often continuous, overlapping, and context-sensitive which is something that these traditional topic models struggle to handle.
+
+## Sentence-BERT: Capturing Latent Semantic and Emotional Structure
+
+I used Sentence-BERT (Reimers & Gurevych, 2019), a transformer-based model that generates dense, context-aware embeddings at the sentence level. This model is trained to understand how the same word can mean different things depending on its phrasing and placement, which is a key advantage for working with affective, messy, and non-linear online writing.
+
+Rather than forcing the data into predefined clusters, this step simply maps each post into a shared semantic space, preserving the relationships between them. This space forms the basis for further interpretation and analysis using cluster terms, keyness, and network structure.
+
+```{python}
+from sentence_transformers import SentenceTransformer
+
+# Load model and encode
+model = SentenceTransformer('all-MiniLM-L6-v2')
+corpus = full_df['clean_text'].tolist()
+embeddings = model.encode(corpus, show_progress_bar=True)
+```
+
+```{python}
+kmeans = KMeans(n_clusters=5, random_state=42)
+bert_labels = kmeans.fit_predict(embeddings)
+
+# Add to dataframe
+full_df['bert_cluster'] = bert_labels
+```
+
+While vector-based models are good at capturing overall structure, they don't directly tell us which words are statistically distinctive in different communities or clusters. For that, I used keyness analysis, which is a corpus linguistics method designed to identify words that are significantly more frequent in one group than another.
+
+In this project, I used log-likelihood (G²) as the keyness metric. It performs well on unbalanced corpora and accounts for low-frequency terms, making it ideal for comparing Reddit groups. This allowed me to examine whether different BERT clusters (or subreddits) reflect not just thematic differences, but also **distinct lexical choices**, a core part of H1 and H2.
+
+```{python}
+from sklearn.feature_extraction.text import CountVectorizer
+import numpy as np
+import pandas as pd
+
+# Prepare group texts
+group1 = full_df[full_df['bert_cluster'] == 0]['clean_text']
+group2 = full_df[full_df['bert_cluster'] == 1]['clean_text']
+
+# Vectorise both
+cv = CountVectorizer(min_df=5, stop_words='english')
+X = cv.fit_transform(pd.concat([group1, group2]))
+
+# Get frequency counts
+group1_counts = X[:len(group1), :].sum(axis=0).A1
+group2_counts = X[len(group1):, :].sum(axis=0).A1
+vocab = np.array(cv.get_feature_names_out())
+```
+
+```{python}
+def log_likelihood(freq1, freq2):
+    total1 = freq1.sum()
+    total2 = freq2.sum()
+    E1 = (freq1 + freq2) * total1 / (total1 + total2)
+    E2 = (freq1 + freq2) * total2 / (total1 + total2)
+    valid = (freq1 > 0) & (freq2 > 0)
+
+    G2 = 2 * ((freq1[valid] * np.log(freq1[valid] / E1[valid])) +
+              (freq2[valid] * np.log(freq2[valid] / E2[valid])))
+
+    return pd.DataFrame({
+        'word': vocab[valid],
+        'G2': G2,
+        'group1_freq': freq1[valid],
+        'group2_freq': freq2[valid],
+        'bias': np.where(freq1[valid] > freq2[valid], 'Cluster 0', 'Cluster 1')
+    }).sort_values('G2', ascending=False)
+
+keyness_df = log_likelihood(group1_counts, group2_counts)
+```
+
+```{python}
+from sklearn.cluster import KMeans
+
+kmeans = KMeans(n_clusters=2, random_state=42)
+bert_labels = kmeans.fit_predict(embeddings)
+
+# Store cluster labels in DataFrame
+full_df['bert_cluster'] = bert_labels  
+```
+
+```{python}
+crosstab = pd.crosstab(full_df['subreddit'], full_df['bert_cluster'], normalize='index')
+crosstab.plot(kind='bar', stacked=True, figsize=(8, 5), colormap='Set2')
+plt.title("Subreddit Distribution Across BERT Clusters")
+plt.ylabel("Proportion")
+plt.tight_layout()
+plt.show()
+print(full_df.columns)
+```
+
+```{python}
+from scipy.stats import chi2_contingency
+
+contingency = pd.crosstab(full_df['subreddit'], full_df['bert_cluster'])
+chi2, p, dof, expected = chi2_contingency(contingency)
+
+print(f"Chi² = {chi2:.2f}, p = {p:.4f}")
+```
+
+## Statistical Association Between Subreddits and BERT Clusters
+
+To test whether subreddit labels are randomly distributed across the clusters generated from Sentence-BERT embeddings, I ran a chi-square test of independence.
+
+- **Chi² = 311.07**, **p < 0.0001**
+
+This result is highly significant, suggesting that **BERT clusters are meaningfully aligned with subreddit boundaries**. Even though clustering was performed without any label supervision, the resulting groupings reflect distinct thematic or emotional tendencies associated with specific subreddits. This supports Hypothesis 3 and reinforces the idea that subreddit identity captures more than just platform structure, and it reflects real narrative and affective differences.
+
+## Emotional Tone Across BERT Clusters
+
+To test whether the clusters captured distinct emotional tones, I ran sentiment analysis using VADER and compared average compound scores across the two BERT clusters.
+
+| Cluster | Mean Sentiment | Interpretation |
+|---------|----------------|----------------|
+| 0       | **−0.49**      | More negative tone overall |
+| 1       | **−0.34**      | Less negative, more emotionally mixed |
+
+While both clusters are on the negative side of the sentiment scale (as expected for mental health narratives), **Cluster 0 is significantly more negative**, suggesting a higher concentration of hopelessness, distress, or suicidal ideation.
+
+This supports **Hypothesis 1**, indicating that clusters differ in their use of affective language — consistent with prior psychological research linking linguistic tone to underlying emotional states (e.g., Pennebaker et al., 2015).
+
+```{python}
+import nltk
+nltk.download('vader_lexicon')
+from nltk.sentiment import SentimentIntensityAnalyzer
+sia = SentimentIntensityAnalyzer()
+
+# Apply sentiment analysis to each post
+full_df['sentiment'] = full_df['clean_text'].apply(lambda x: sia.polarity_scores(x)['compound'])
+
+# Compare sentiment by cluster
+full_df.groupby('bert_cluster')['sentiment'].describe()
+```
+
+---
+
+## Keyness Analysis Across Subreddits
+
+To understand how users talk differently in each mental health subreddit, I ran a keyness analysis using the G² log-likelihood statistic. This approach compares the frequency of each word in one subreddit against its frequency across the rest. It helps identify which terms are most distinctive or characteristic of each community.
+
+The interactive chart below shows the top distinctive words for each subreddit. You can hover over each bar to see how often the word appeared, or click on the legend to highlight or hide specific subreddits.
+
+### What stands out
+
+- In **r/anxiety**, words like *panic*, *attack*, *anxious*, and *smoke* show up strongly. These reflect posts that focus on intense, immediate emotional experiences.
+- In **r/depression**, the language leans toward more chronic, low-arousal states—terms like *life*, *study*, *drunk*, and *school* suggest longer-term rumination and contextual struggles.
+- **r/mentalhealth** features broader, more neutral language like *job*, *live*, and *mental*, which might reflect general advice-seeking or reflection that isn't specific to one condition.
+- In **r/suicidewatch**, the language is more urgent and direct, with terms like *end*, *die*, *suicide*, and *commit*. These are posts written in moments of crisis.
+- **r/lonely** shows terms that highlight social isolation—*loneliness*, *guy*, *group*, and *isolated* are common here and suggest a desire for connection or community, and particularly seem to be oriented towards a male issue (like the male loneliness epidemic, maybe?)
+
+These patterns suggest that while there is some overlap across subreddits, each space still carries a distinct emotional tone and thematic focus. This supports the idea that subreddit labels aren’t just administrative! They reflect *real differences* in how people narrate distress and identity. That adds support for both Hypothesis 1 (affective differentiation) and Hypothesis 3 (subreddit-topic overlap).
+
+```{python}
+from sklearn.feature_extraction.text import CountVectorizer
+import pandas as pd
+import numpy as np
+
+texts = full_df['clean_text']
+labels = full_df['subreddit']
+
+vectorizer = CountVectorizer(min_df=5, stop_words='english')
+X = vectorizer.fit_transform(texts)
+vocab = vectorizer.get_feature_names_out()
+
+# Turn into DataFrame: rows = subreddits, cols = terms
+term_matrix = pd.DataFrame(0, index=labels.unique(), columns=vocab)
+
+for subreddit in labels.unique():
+    term_matrix.loc[subreddit] = X[labels == subreddit].sum(axis=0).A1
+```
+
+```{python}
+import numpy as np
+
+def g2_keyness(freq1, freq2, smooth=0.5):
+    """
+    Calculate G² log-likelihood keyness score for each token.
+    
+    Parameters:
+        freq1: np.array or pd.Series — frequencies in target group
+        freq2: np.array or pd.Series — frequencies in comparison group
+        smooth: float — smoothing to avoid division by zero
+    """
+    freq1 = np.array(freq1) + smooth
+    freq2 = np.array(freq2) + smooth
+    
+    total1 = freq1.sum()
+    total2 = freq2.sum()
+
+    expected1 = (freq1 + freq2) * (total1 / (total1 + total2))
+    expected2 = (freq1 + freq2) * (total2 / (total1 + total2))
+
+    valid = (freq1 > 0) & (freq2 > 0)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        G2 = 2 * (freq1[valid] * np.log(freq1[valid] / expected1[valid]) +
+                  freq2[valid] * np.log(freq2[valid] / expected2[valid]))
+
+    return G2, valid
+```
+
+```{python}
+# top 10 from each subreddit into one DataFrame
+combined = pd.concat([
+    df.head(10).assign(subreddit=sub) for sub, df in keyness_results.items()
+])
+
+# Plot
+plt.figure(figsize=(10, 12))
+sns.barplot(
+    x='log_likelihood', y='token', hue='subreddit', data=combined,
+    dodge=False, palette='tab10'
+)
+plt.title("Top Distinctive Words Across All Subreddits")
+plt.xlabel("G² Log-Likelihood")
+plt.ylabel("Token")
+plt.legend(title='Subreddit')
+plt.tight_layout()
+plt.show()
+```
+
+## Human-Labeled Categories Across BERT Clusters
+
+To assess whether the Sentence-BERT clusters reflected meaningful thematic variation, I compared the distribution of annotated post labels (`Label`) across clusters.
+
+Each post in the dataset had been manually assigned to one of four higher-order categories: **Drug and Alcohol**, **Early Life**, **Personality**, and **Trauma and Stress**. These were grouped under a standardized label structure to remove duplication and casing inconsistencies.
+
+As shown in the chart above, the **distribution of labels across BERT clusters is clearly non-random**:
+
+- **Cluster 0** includes a higher proportion of posts related to **substance use** and **personality difficulties**.
+- **Cluster 1** contains more posts focused on **early life experiences** and **trauma-related discourse**.
+
+This supports the idea that the unsupervised BERT model has surfaced meaningful latent structure in the data — reflecting underlying psychological themes without relying on pre-defined categories. It also reinforces **Hypothesis 3**, suggesting that BERT clusters correspond not just to surface-level lexical patterns, but to deeper, interpretable differences in narrative content.
+
+```{python}
+# Standardize label text
+full_df['Label'] = (
+    full_df['Label']
+    .str.lower()                    # lowercase everything
+    .str.strip()                   # remove leading/trailing spaces
+    .str.replace(r'\s+', ' ', regex=True)  # remove excess whitespace
+    .str.title()                   # make it "Title Case"
+)
+label_dist = pd.crosstab(full_df['bert_cluster'], full_df['Label'], normalize='index')
+label_dist.plot(kind='bar', stacked=True, figsize=(10, 6), colormap='Set3')
+plt.title("Distribution of Annotated Labels Across BERT Clusters")
+plt.ylabel("Proportion")
+plt.xlabel("BERT Cluster")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+keyness_results = {}
+
+for subreddit in term_matrix.index:
+    target = term_matrix.loc[subreddit]
+    rest = term_matrix.drop(index=subreddit).sum(axis=0)
+
+    LL, valid = g2_keyness(target, rest)  # make sure this is the updated version
+
+    df = pd.DataFrame({
+        'token': np.array(term_matrix.columns)[valid],
+        'log_likelihood': LL,
+        'more_common_in': subreddit,
+        'target_freq': target.values[valid],
+        'rest_freq': rest.values[valid]
+    })
+
+    df = df.sort_values('log_likelihood', ascending=False)
+    keyness_results[subreddit] = df[df['log_likelihood'] > 10]
+```
+
+```{python}
+## An interactive plot (fixed to render(hopefully!) from the last summative submission)
+
+# Combine top 10 tokens from each subreddit
+combined_df = pd.concat([
+    df.head(10).assign(subreddit=sub) for sub, df in keyness_results.items()
+], ignore_index=True)
+import plotly.express as px
+
+fig = px.bar(
+    combined_df,
+    x='log_likelihood',
+    y='token',
+    color='subreddit',
+    orientation='h',
+    text='log_likelihood',
+    hover_data=['target_freq', 'rest_freq'],
+    title='Top Distinctive Words Across Subreddits (G² Keyness)',
+    height=600
+)
+
+fig.update_layout(
+    yaxis=dict(categoryorder='total ascending'),
+    bargap=0.3,
+    template='plotly_white'
+)
+fig.show()
+```
+
+## Keyness Analysis Results – What's Driving the Difference?
+
+Hmm, interesting!
+
+When I ran keyness analysis comparing posts from `r/anxiety` and `r/depression`, some clear lexical patterns jumped out. Using the **log-likelihood (G²) statistic**, I looked at which words were **statistically overrepresented** in each subreddit — and the results really reflect the **different emotional landscapes** of each space.
+
+### Words more common in `r/anxiety`:
+- **"anxiety", "anxious", "angry", "afraid", "advice", "alcohol", "amp"**
+
+These are high-arousal, reactive terms. The prevalence of "anxious", "angry", and "afraid" suggests a discourse marked by **immediacy and overwhelm** — users are often describing urgent internal states and looking for coping advice or short-term relief. The presence of "alcohol" and "advice" may signal a coping vs seeking dichotomy.
+
+### Words more common in `r/depression`:
+- Much fewer, but includes **"abuse", "addiction", "adhd", "absolutely"**
+
+These appear more reflective or diagnostic — users may be recounting **longer-term struggles or identity-based labels** (e.g., “I was diagnosed with ADHD”, or “I experienced abuse”). It’s possible that posts here are more ruminative or explanatory rather than immediate emotional venting.
+
+### What This Suggests:
+- Posts in `r/anxiety` tend to be **shorter, more emotional**, and often framed around panic, immediate fear, and self-management.
+- Posts in `r/depression` lean slightly more into **narrative, diagnostic**, or medicalised language — possibly due to the nature of the subreddit or the way depressive states are shared.
+
+Even without clustering, this kind of analysis shows how **lexical choices reflect different psychological states and community norms**. And this supports both **Hypothesis 1 (Affective Differentiation)** and **Hypothesis 2 (Lexical Diversity and Trauma)** — users in trauma-heavy contexts like depression talk differently, even when using similar platforms.
+
+## Interpretation: What Does This Mean for Our Hypotheses and RQ?
+
+The keyness results support **Hypothesis 1** by showing that different subreddits emphasize different affective terms. High-arousal language such as "anxious" and "afraid" is more common in `r/anxiety`, while more diagnostic or trauma-related language like "abuse" and "addiction" appears in `r/depression`.
+
+**Hypothesis 2** is reinforced by the lexical divergence between subreddits. While the overall vocabulary may overlap, the presence of specialized terms suggests that clusters associated with trauma or identity disclose more varied and narratively complex content.
+
+**Hypothesis 3** is also supported. The distribution of words strongly aligns with subreddit boundaries, suggesting that subreddit labels reflect deeper emotional and thematic distinctions rather than surface-level noise.
+
+Together, these findings suggest that users across mental health subreddits do indeed narrate agency and self-concept differently, shaped by both emotional experience and community-specific norms. This answers the research question by highlighting how platform discourse reflects structured variation in psychological expression.
+
+---
+## Use of Generative AI
+
+Throughout this project, I used ChatGPT to support both coding and understanding of theory. This included assistance with generating code templates, clarifying Python logic, and debugging errors during implementation.
+
+In particular, I relied on AI support when working with more advanced methods such as **Sentence-BERT embeddings**, where I used ChatGPT to understand appropriate model parameters and clustering strategies. I also used it to explore alternatives to traditional topic modelling and to interpret the results in line with the research question.
+
+Beyond code generation, ChatGPT was especially helpful in guiding the **conceptual framing of similarity analysis**. For example, it helped me identify that **Jaccard similarity** could be applied not only between subreddits but also between **annotated labels**, allowing me to link linguistic patterns more directly to the psychological themes embedded in the dataset.
+
+I also found it helpful in using all the terminologies covered in class, so for example if I understood something intuitively, I asked ChatGPT what this means in the terminologies appropriate for the project. This helped me make my interpretations sound more context specific and also helped me understand/gain confidence in interpreting results. 
+
+Finally, I used ChatGPT to help troubleshoot specific issues such as broken visualisations, HTML rendering in Quarto, and inconsistencies in variable preprocessing.
+

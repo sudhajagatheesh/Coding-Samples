@@ -1,0 +1,247 @@
+---
+title: "BE552 - Assignment 1, R Notebook"
+subtitle: 'Student ID: 25779, 95788'
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+# Loading the Dataset
+
+First, we downloaded the dataset from the portal onto the desktop and then imported it into RStudio
+
+```{r}
+load("~/Downloads/prgdnkp1-1.RData")
+```
+
+## Loading packages
+```{r}
+library(broom)
+library(ggplot2)
+library(dplyr)      
+library(tidyr)
+library(gridExtra)
+
+```
+
+
+# Problem 3. Wages of Individuals in Denmark – What determines wages?
+
+## Question 2
+
+### (a) What is the average hourly wage in the sample?
+
+To calculate the average hourly wage, we can perform one of two different functions, one using the *favstats* function and the other using the *mean* function. Here, it makes sense to use the latter as we get a direct response. 
+
+```{r}
+
+#Before proceeding, we check the structure of the dataset to observe for missing values and factor levels. Here, there are missing values in certain columns, so we must request the code to exclude these columbs for the analysis. 
+
+str(prgdnkp1)
+
+```
+
+```{r}
+
+# Calculating the average hourly wage 
+avg_wage <- mean(prgdnkp1$wage, na.rm = TRUE)
+
+# Printing results
+cat("The average hourly wage in the sample is:", round(avg_wage, 2))
+
+```
+As indicated by the code output above, the average wage in the sample is 26 per hour.
+
+### (b)Is there a statistically significant difference by gender? If yes, how big is the difference
+
+To check if there is a statistically significant difference by group means, we employ a t-test. A pre-requisite for the t-test, however, is that the data be normally distributed. First, we will check whether the wages for men and women are of a normal distribution. 
+
+```{r}
+# Histogram for men
+hist_men <- ggplot(subset(prgdnkp1, female == 0), aes(x = wage)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "steelblue", alpha = 0.7) +
+  labs(title = "Dist. of Wages-Men", x = "Wage")
+
+# Histogram for women
+hist_women <- ggplot(subset(prgdnkp1, female == 1), aes(x = wage)) +
+  geom_histogram(binwidth = 1, fill = "darkred", color = "darkred", alpha = 0.7) +
+  labs(title = "Dist. of Wages-Women", x = "Wage")
+
+grid.arrange(hist_men, hist_women, ncol = 2)
+
+```
+It looks to be fairly normal, however, with a few outliers towards the right end of the wage spectrum. While this would have been an issue with smaller datasets, our large sample of n= 3,996 is sufficient enough for the t-test to yeild robust results despite the slight deviances from normality. Thus, we shall proceed with the t-test. 
+
+*Testing statistically significant difference in hourly wage across gender:*
+
+```{r}
+# Performing a t-test for the difference in hourly wages by gender
+Wage_Difference <- t.test(wage ~ female, data = prgdnkp1)
+
+# Print the result
+print(Wage_Difference)
+```
+From the results above, it's clear that there exists a significant difference between the two group means, with a p value extremely close to 0. The mean wages for men are significantly higher than those for women, with a difference of 3.54 (27.76 - 24.22). This indicates that there is unequal pay for women, and that they are paid lower than their male counterparts.
+
+## Question 3
+### Structure of dataset
+
+```{r}
+str(prgdnkp1)
+```
+To plot histograms, we can either use the *hist* function to plot histograms, or customise histograms using the *ggplot* function and the *ggplot2* package.
+
+### (a)(b) and (c) 
+
+```{r}
+
+# (a) Plot the distribution of wage
+ggplot(prgdnkp1, aes(x = wage)) +
+  geom_histogram(binwidth = 1, fill = "grey", color = "darkgrey") +
+  labs(title = "Distribution of Wage", x = "Wage") +
+  theme_gray()
+
+```
+```{r}
+# (b) Plot the distribution of school
+ggplot(prgdnkp1, aes(x = school)) +
+  geom_histogram(binwidth = 1, fill = "grey", color = "black") +
+  labs(title = "Distribution of Schooling", x = "Years of Schooling") +
+  theme_gray()
+```
+
+
+```{r}
+# (c) Plot the distribution of exper
+ggplot(prgdnkp1, aes(x = exper)) +
+  geom_histogram(binwidth = 1, fill = "darkgrey", color = "black") +
+  labs(title = "Distribution of Experience", x = "Years of Experience") +
+  theme_gray()
+```
+
+## Question 4: 
+In order to understand whether those who attain higher years of schooling also earn higher wages, let’s focus on a simple linear regression model. The dependent variable is thus wage (a person’s hourly wage), and the independent variable is school (an individual’s years of schooling):
+
+We will use the *lm* function in R to run a simple linear regression, with schooling as a predictor. 
+
+```{r}
+# Constructing the linear model
+
+Model_Wage <- lm(wage ~ school, data = prgdnkp1)
+
+# Regression summary
+summary(Model_Wage)
+```
+The coefficients and answer to (b) are interpreted in the pdf document containing our other answers.
+
+
+### (c) Compute the OLS fitted values and the residuals of the equation
+
+The purpose of computing the OLS fitted values is to find the best line of fit by minimising the differences between actual and predicted values.
+
+```{r}
+
+# Getting the fitted values and residulas of the model
+fitted_values <- predict(Model_Wage)
+
+residuals <- residuals(Model_Wage)
+
+# Getting the first few rows of the fitted values and residuals
+head(data.frame(Fitted_Values = fitted_values, Residuals = residuals))
+
+
+```
+### (d) Report the sample average of the residuals. Is it what you expected?
+
+Next, we calculate the average of residuals for the fitted values. 
+
+```{r}
+average_residuals <- mean(residuals)
+cat("Sample average of the residuals:", round(average_residuals, 4), "\n")
+
+```
+It is found that the average is 0. A sample average of residuals that is 0, is a positive indicator for the reliability of the linear regression model. It suggests that our model is a well-fitted model, unlikely to have estimation errors. 
+
+We have also created a scatterplot to visualise the linear model along with the regression line. 
+
+```{r}
+library(ggplot2)
+ggplot(prgdnkp1, aes(x = school, y = wage)) +
+   geom_jitter(width = 0.5, height = 0.5, alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Scatterplot with Regression Line",
+       x = "Years of Schooling",
+       y = "Hourly Wage") +
+  theme_minimal()
+```
+
+
+### (e) Consider the relationship between schooling and hourly wage. You have a hunch that the relationship might not be the same for both men and women. Run the simple regression from the previous question, but separated by gender. Briefly comment on your result.
+
+```{r}
+
+# Run separate simple linear regressions for male and female
+model_male <- lm(wage ~ school, data = subset(prgdnkp1, female == 0))
+model_female <- lm(wage ~ school, data = subset(prgdnkp1, female == 1))
+
+# Display the regression summaries
+summary(model_male)
+summary(model_female)
+
+```
+
+The results suggest that, on average, higher levels of schooling are associated with higher hourly wages for both males and females The models for both genders are statistically significant. More interpretations are in the attached pdf file with our other responses. We have also visualised two plots below to understand the two models better:
+
+```{r}
+scatterplot_male <- ggplot(subset(prgdnkp1, female == 0), aes(x = school, y = wage)) +
+ geom_jitter(width = 0.5, height = 0.5, alpha = 0.6, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Male Workers",
+       x = "Years of Schooling",
+       y = "Hourly Wage") +
+  theme_minimal()
+
+scatterplot_female <- ggplot(subset(prgdnkp1, female == 1), aes(x = school, y = wage)) +
+ geom_jitter(width = 0.5, height = 0.5, alpha = 0.6, color = "purple") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(title = "Female Workers",
+       x = "Years of Schooling",
+       y = "Hourly Wage") +
+  theme_minimal()
+
+
+grid.arrange(scatterplot_male, scatterplot_female, ncol = 2)
+```
+
+## Question 5
+What is the average hourly wage for
+
+###
+### i) all individuals who are married
+
+```{r}
+# (i) Average hourly wage for all individuals who are married
+avg_wage_all_married <- mean(prgdnkp1$wage[prgdnkp1$married == 1], na.rm = TRUE)
+cat("Average hourly wage for all married individuals:", round(avg_wage_all_married, 2), "\n")
+```
+
+### ii) women who are married
+
+```{r}
+# (ii) Average hourly wage for women who are married
+avg_wage_married_women <- mean(prgdnkp1$wage[prgdnkp1$married == 1 & prgdnkp1$female == 1], na.rm = TRUE)
+cat("Average hourly wage for married women:", round(avg_wage_married_women, 2), "\n")
+```
+
+### iii) men who are married.
+```{r}
+# (iii) Average hourly wage for men who are married
+avg_wage_married_men <- mean(prgdnkp1$wage[prgdnkp1$married == 1 & prgdnkp1$female == 0], na.rm = TRUE)
+cat("Average hourly wage for married men:", round(avg_wage_married_men, 2), "\n")
+
+```
+
+
+

@@ -1,0 +1,296 @@
+---
+title: "Sentiment Analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+## Cleaning Main Dataset
+```{r}
+plot(cars)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+install.packages("tm")
+install.packages("SnowballC")
+install.packages("cluster")
+install.packages("wordcloud") # Optional, for visualization
+
+library(tm)
+library(SnowballC)
+library(cluster)
+library(wordcloud) # Optional
+
+```
+```{r}
+# Load the dataset
+tweets <- read.csv("/Users/sudharsanajagatheesh/Desktop/UPR_Tweets_Processed.csv", stringsAsFactors = FALSE)
+
+# Create a corpus
+corpus <- Corpus(VectorSource(tweets$Processed_Tweet))
+
+```
+
+```{r}
+# Preprocess the corpus
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("en"))
+corpus <- tm_map(corpus, stemDocument)
+
+```
+
+```{r}
+# Create a DTM
+dtm <- DocumentTermMatrix(corpus)
+
+# Optionally, filter out sparse terms
+dtm <- removeSparseTerms(dtm, 0.99) # Keeps terms that appear in at least 1% of the documents
+dim(dtm)
+
+
+```
+## Training Data
+```{r}
+# Training Data
+install.packages("tm")
+install.packages("SnowballC")
+install.packages("readxl")
+install.packages("e1071")
+install.packages("caret")
+install.packages("xlsx")
+
+library(tm)
+library(SnowballC)
+library(readxl)
+library(e1071)
+library(caret)
+library(xlsx)
+
+```
+
+### Loading Training Data
+```{r}
+# Load the training data from the Excel file
+training_data <- read_excel("/Users/sudharsanajagatheesh/Desktop/Training.xlsx")
+
+```
+
+### Preprocessing Training Data
+
+```{r}
+# Preprocessing function
+# Load necessary libraries
+library(tm)
+library(SnowballC)
+library(readxl)
+library(e1071)
+library(caret)
+
+# Define the preprocessing function
+preprocess_tweet <- function(tweet) {
+  # Check if the tweet is non-empty
+  if (is.na(tweet) || tweet == "") {
+    return("")
+  }
+  
+  # Lowercase
+  tweet <- tolower(tweet)
+  
+  # Replace different spellings of 'zelenskyy' with 'zelenskyy'
+  tweet <- gsub("zelensk[iy]+", "zelenskyy", tweet)
+  
+  # Remove URLs
+  tweet <- gsub("http\\S+|www\\S+", "", tweet)
+  
+  # Remove hashtags
+  tweet <- gsub("#\\S+", "", tweet)
+  
+  # Remove punctuation and numbers
+  tweet <- removePunctuation(tweet)
+  tweet <- removeNumbers(tweet)
+  
+  # Remove extra white spaces
+  tweet <- stripWhitespace(tweet)
+  
+  
+  # Remove stopwords
+  tweet <- removeWords(tweet, stopwords("en"))
+  
+  # Stemming
+  tweet <- wordStem(words = tweet, language = "en")
+  
+  return(paste(tweet, collapse = " "))
+}
+
+# Load the training data from the Excel file
+training_data <- read_excel("/Users/sudharsanajagatheesh/Desktop/Training.xlsx")
+
+# Check if 'Tweet' column exists
+if (!"tweet" %in% colnames(training_data)) {
+  stop("The 'Tweet' column does not exist in the data frame.")
+}
+
+# Apply the preprocessing function to the 'Tweet' column
+training_data$Processed_Tweet <- sapply(training_data$tweet, preprocess_tweet, USE.NAMES = FALSE)
+
+# Verify the results
+head(training_data$Processed_Tweet)
+
+
+```
+
+## Creating a DTM
+```{r}
+# Create a corpus from the 'Processed_Tweet' column
+corpus <- Corpus(VectorSource(training_data$Processed_Tweet))
+
+# Create a DTM
+dtm <- DocumentTermMatrix(corpus)
+
+# Check the content
+inspect(dtm)  # View a subset of the DTM
+
+```
+
+##Naive Bayes training
+```{r}
+# Convert 'Sentiment' column to a factor
+training_data$Sentiment <- as.factor(training_data$sentiment)
+
+library(caret)
+
+# Partition the data into training and testing sets
+set.seed(123) # for reproducibility
+index <- createDataPartition(training_data$sentiment, p = 0.8, list = FALSE)
+train_data <- training_data[index, ]
+test_data <- training_data[-index, ]
+
+
+```
+
+### Creating DTMS
+
+```{r}
+library(e1071)
+
+# Train the Naive Bayes model
+nb_model <- naiveBayes(train_matrix, train_data$sentiment)
+
+```
+
+```{r}
+# Assuming the 'Text' column contains the preprocessed tweets
+train_corpus <- Corpus(VectorSource(train_data$Processed_Tweet))
+test_corpus <- Corpus(VectorSource(test_data$Processed_Tweet))
+
+# Create DTMs
+train_dtm <- DocumentTermMatrix(train_corpus)
+test_dtm <- DocumentTermMatrix(test_corpus, control = list(dictionary = Terms(train_dtm)))
+
+# Convert DTMs to matrices
+train_matrix <- as.matrix(train_dtm)
+test_matrix <- as.matrix(test_dtm)
+
+# Ensure that the number of columns in both matrices are the same
+if (ncol(train_matrix) != ncol(test_matrix)) {
+  stop("The number of features in the training and testing sets are different.")
+}
+
+```
+
+### Inspecting Data
+```{r}
+# Check the structure and summary of predictions and actual labels
+str(predictions)
+str(test_data$Sentiment)
+table(predictions)
+table(test_data$Sentiment)
+
+```
+```{r}
+# Assuming 'nb_model' is your trained Naive Bayes model and 'test_matrix' is prepared for test data
+predictions <- predict(nb_model, test_matrix)
+
+```
+
+## Making Predictions
+```{r}
+
+# When subsetting or preparing test_data, ensure factor levels are retained
+test_data$Sentiment <- factor(test_data$sentiment, levels = c("1", "-1", "0"))
+
+# Relevel both actual and predicted sentiments to include all possible levels
+test_data$sentiment <- factor(test_data$sentiment, levels = all_levels)
+predictions <- factor(predictions, levels = all_levels)
+
+# Now attempt to create the confusion matrix again
+performance <- confusionMatrix(predictions, test_data$sentiment)
+print(performance)
+
+
+```
+
+## BERT
+```{r}
+install.packages("reticulate")
+reticulate::py_install(c("torch", "transformers"))
+
+```
+```{r}
+library(reticulate)
+transformers <- import("transformers")
+
+# Load pre-trained model and tokenizer with PyTorch
+tokenizer <- transformers$BertTokenizer$from_pretrained("bert-base-uncased")
+model <- transformers$AutoModelForSequenceClassification$from_pretrained("bert-base-uncased", num_labels = 3L)
+
+
+```
+```{r}
+tweets <- r_to_py(training_data$tweet)
+sentiments <- r_to_py(as.integer(training_data$sentiment) + 1)  # Adjusting labels to 0-based indexing if needed
+
+```
+
+```{r}
+library(reticulate)
+
+# Assuming training_data is your dataframe
+tweets <- training_data$tweet
+sentiments <- as.integer(training_data$sentiment) + 1  # Adjusting the range to 0, 1, 2
+
+# Convert R vectors to Python objects
+py_tweets <- r_to_py(tweets)
+py_sentiments <- r_to_py(sentiments)
+
+```
+
+
+
+
+```{r}
+library(reticulate)
+
+# Ensure tweets are in a Python list and sentiments are in a numpy array
+tweets_list <- training_data$tweet
+sentiments_array <- as.integer(training_data$sentiment) + 1  # Adjusting sentiment values to start from 0
+
+# Insert actual data into Python code
+python_code <- gsub("tweets = \\[\\]", sprintf("tweets = %s", tweets_list), python_code)
+python_code <- gsub("sentiments = \\[\\]", sprintf("sentiments = %s", py_str(sentiments_array)), python_code)
+
+# Execute Python code
+py_run_string(python_code)
+
+```
+
+

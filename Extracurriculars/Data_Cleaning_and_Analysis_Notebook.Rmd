@@ -1,0 +1,367 @@
+---
+title: "Data Task"
+author: "Sudha Jagatheesh Jayanand"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r include=FALSE}
+#Core data wrangling & plotting packages
+library(tidyverse)
+library(janitor)
+library(mosaic)
+library(psych)
+library(corrr)
+library(GGally)
+library(parameters)
+library(readr)
+library(broom)
+library(dplyr)
+```
+
+```{r include=FALSE}
+data <- read_csv("/Users/sudharsanajagatheesh/Desktop/Jackson_2019_Dataset.csv")
+
+#Getting a quick look at the data
+glimpse(data)
+
+#Checking to make sure we have no missing values
+summary(data)
+colSums(is.na(data))
+```
+
+I first imported all necessary libraries and inspected the data. The dataset is labelled as mentioned in the *Instructions* file, and there's no missing values, which means we can directly move onto the analysis.
+
+------------------------------------------------------------------------
+
+# Question 1
+
+The question is essentially asking for a bar plot with variables ranked on descending values of concern for each threat. While a simple bar chart would've provided this information, I was curious to see if there were any differences across threat types (Social, Political, Economic, Environmental, Health), so I colour-coded the `SocietalThreat` variables based on general threat domain, and plotted the bar chart with names mapped from the variable codes. Confidence intervals were also plotted to show the certainty of these scores.
+
+```{r}
+long_threats <- data %>%
+  pivot_longer(cols = starts_with("SocietalThreat"),
+               names_to = "Threat",
+               values_to = "Concern") %>%
+  mutate(
+    Threat = recode(Threat,
+      SocietalThreat_1 = "Natural Disaster",
+      SocietalThreat_2 = "Famine",
+      SocietalThreat_3 = "Pollution",
+      SocietalThreat_4 = "Terrorist Attack",
+      SocietalThreat_5 = "Crime",
+      SocietalThreat_6 = "Discrimination",
+      SocietalThreat_7 = "National Debt",
+      SocietalThreat_8 = "COVID-19",
+      SocietalThreat_9 = "Refugee Influx",
+      SocietalThreat_10 = "Illegal Immigration"
+    ),
+    Category = case_when(
+      Threat %in% c("Natural Disaster", "Famine", "Pollution") ~ "Environmental",
+      Threat %in% c("Terrorist Attack", "Crime", "Discrimination") ~ "Social",
+      Threat %in% c("Refugee Influx", "Illegal Immigration") ~ "Migration",
+      Threat == "COVID-19" ~ "Health",
+      Threat == "National Debt" ~ "Economic"
+    )
+  )
+
+#Summary stats
+threat_summary <- long_threats %>%
+  group_by(Threat, Category) %>%
+  summarise(
+    mean_concern = mean(Concern, na.rm = TRUE),
+    sd = sd(Concern, na.rm = TRUE),
+    n = sum(!is.na(Concern)),
+    se = sd / sqrt(n),
+    ci_low = mean_concern - 1.96 * se,
+    ci_high = mean_concern + 1.96 * se
+  ) %>%
+  ungroup() %>%
+  arrange(desc(mean_concern))
+
+
+library(ggplot2)
+
+ggplot(threat_summary, aes(x = reorder(Threat, mean_concern), y = mean_concern, fill = Category)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2, color = "black") +
+  geom_text(aes(label = round(mean_concern, 2)), hjust = -0.1, size = 4) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Which Threats Worry People the Most?",
+    subtitle = "Average concern across all countries, grouped by threat category",
+    x = "",
+    y = "Average Concern (0–6 scale)",
+    fill = "Threat Category"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top")
+```
+
+The output seems interesting! `Covid-19` has the highest average concern, but it isn't far from `Pollution` and `Crime`, which together make up the top three threat categories. Interestingly, however, `Illegal Immigration` and `Refugee Influx` both score the lowest, which suggests that on average, issues on immigration seem to have lower levels of threat concern.
+
+------------------------------------------------------------------------
+
+# Question 2
+
+According to Jackson (2019), the desire for cultural tightness scale was validated in previous studies using Chronbach’s alpha, factor analysis and measurement in variance across cultures (Gelfand et al., 2011). I decided to implement a *Chronbach's Alpha* test, but decided to also employ a *McDonald's Omega* test. The decision was taken with the understanding that equal item loadings (as assumed in Chronbach's Alpha!) may not necessarily be true, and for a more robust estimate, McDonald's Omega fares better. Essentially, McDonald's omega uses actual factor loadings to weigh the items, giving us a more accurate (albeit marginally different) result.
+
+The two tests demonstrated high internal consistency (*Cronbach’s α = .85*), with an omega total of .87 and omega general of .72.
+
+Similar to Gelfand et al., I was curious to see what an exploratory factor analysis (EFA) would yeild, so I implemented the test to our dataset as it's likely results can vary due to context and other confounds. The results supported a unidimensional structure, with all items loading ≥ .50 on a single latent factor. While a bifactor model with three subfactors showed improved fit, the additional group variance was minimal *(omega group range = .07–.24*), and the general factor remained dominant. Essentially, the data IS testing a single construct (cultural tightness), which is great!
+
+## Chronbach's Alpha
+
+```{r}
+ct_items <- data %>%
+  select(starts_with("CT_"))
+```
+
+```{r}
+library(psych)
+
+alpha(ct_items)
+```
+
+## McDonald's Omega
+
+```{r}
+library(parameters)
+
+omega(ct_items)
+```
+
+## Exploratory Factor Analysis
+
+```{r}
+fa.parallel(ct_items)  # Scree plot for number of factors
+
+fa(ct_items, nfactors = 1, rotate = "none")  # Basic 1-factor solution
+```
+
+# Question 3
+
+## Mean CT Scores
+
+```{r}
+#mean CT score
+data <- data %>%
+  mutate(CT_mean = rowMeans(select(., starts_with("CT_")), na.rm = TRUE))
+
+#threat variable list
+threat_vars <- names(data)[grepl("^SocietalThreat_", names(data))]
+
+#Compute correlations
+library(broom)
+
+cor_table <- map_df(threat_vars, function(var) {
+  test <- cor.test(data[[var]], data$CT_mean)
+  tibble(
+    Threat = var,
+    r = round(test$estimate, 2),
+    p = signif(test$p.value, 3),
+    n = sum(complete.cases(data[[var]], data$CT_mean))
+  )
+})
+
+#Mapping the names back to variables
+cor_table$Threat <- recode(cor_table$Threat,
+  SocietalThreat_1 = "Natural Disaster",
+  SocietalThreat_2 = "Famine",
+  SocietalThreat_3 = "Pollution",
+  SocietalThreat_4 = "Terrorist Attack",
+  SocietalThreat_5 = "Crime",
+  SocietalThreat_6 = "Discrimination",
+  SocietalThreat_7 = "National Debt",
+  SocietalThreat_8 = "COVID-19",
+  SocietalThreat_9 = "Refugee Influx",
+  SocietalThreat_10 = "Illegal Immigration"
+)
+
+print(cor_table)
+```
+
+## Correlation Table
+
+A Pearson's correlation test confirmed all correlations were statistically significant but weak in magnitude, with none exceeding *r* = .20. The strongest associations were with `Crime` (*r* = .20), `Refugee Influx` (*r* = .18), and `Illegal Immigration` (*r* = .17), These small values imply that tightness attitudes are influenced by more than just perceived threat.
+
+```{r}
+cor_table <- cor_table %>%
+  arrange(desc(r)) %>%
+  mutate(Threat = factor(Threat, levels = rev(Threat)))
+
+ggplot(cor_table, aes(x = "", y = Threat, fill = r)) +
+  geom_tile() +
+  geom_text(aes(label = round(r, 2)), color = "black", size = 4) +
+  scale_fill_gradient2(low = "green", mid = "white", high = "red", midpoint = 0) +
+  labs(
+    title = "Correlation Between Threat Concern and Cultural Tightness",
+    x = "",
+    y = "",
+    fill = "Pearson's r"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_blank())
+```
+
+# Question 4
+
+## Regression (without controls)
+
+I conducted a simple linear regression to test whether concern about a surge in COVID-19 cases predicts desire for cultural tightness.
+
+The results showed a statistically significant association, *β = 0.10, SE = 0.0099, t(8686) = 9.98, p \< .001*. Essentially, COVID-19 concern positively predicts the need for cultural tightness. The model, however, explained only a small proportion of variance in tightness scores (R² = 0.011), indicating that while the relationship is robust due to the large sample size, the effect size is small.
+
+This finding is consistent with the hypothesis that societal threat increases demand for stronger social norms (but, it also shows that COVID-specific concern accounts for only a small portion of individual variation in tightness attitudes!). The result aligns with Jackson et al. (2019), who theorized that ecological threats can trigger tightening responses. There is a need to consider moderators such as cultural background, institutional trust, or baseline norm strength, though, and I decided to include controls given in the dataset to test if the relationship significantly changes upon adding them.
+
+```{r}
+model <- lm(CT_mean ~ SocietalThreat_8, data = data)
+summary(model)
+```
+
+## Regression (with Controls)
+
+In selecting controls, I chose not to include `Religion`, since the coding in this dataset made it unclear whether the variable captured religious affiliation or degree of religiosity (e.g., how important religion is in daily life). Without this distinction, including the variable would have introduced some uncertainty around interpretation. `Income`, `Age`, and `Education` were straightforward, with `Education` being a binary variable, and `Income` being categorical (higher value = higher income bracket).
+
+Next, I ran a multiple linear regression to examine whether concern about a rise in COVID-19 cases predicted participants’ desire for cultural tightness, while controlling for age, education, and income. COVID-19 concern was a statistically significant positive predictor (β = 0.097, SE = 0.0099, t = 9.86, p \< .001), even after accounting for key demographic factors.
+
+This model, similar to the one above, explained only a small proportion of variance (about 3%; R² = 0.032), suggesting that while the association is robust due to the large sample size, its substantive impact is limited. `Age` had a small positive effect on the desire for cultural tightness (β = 0.011, p \< .001), and `Education` had a small negative effect (β = –0.068, p = .012). Essentially, individuals who were older or uneducated were more likely to express a desire for cultural tightness. `Income` was not a significant predictor (p = 0.22).
+
+Overall, these results are consistent with the theory that ecological threat increases support for stronger social norms. However, the small effect sizes also point to the limited explanatory power of COVID-specific concern alone.
+
+```{r}
+model <- lm(CT_mean ~ SocietalThreat_8 + Age + Education + Income, data = data)
+summary(model)
+```
+
+------------------------------------------------------------------------
+
+# Question 5
+
+Similar to the methodology implemented in Jackson et al. (2019), I decided to pick three countries based on low, moderate, and high desire for cultural tightness. This would help us to see if any patterns emerge in the direction and strength of the effect sizes. So, I plot `mean_CT` scores and visualise them in a table, picking countries with the highest, moderate, and lowest scores for the visualisation.
+
+## Plotting CT scores
+
+```{r}
+data <- data %>%
+  mutate(CT_mean = rowMeans(select(., starts_with("CT_")), na.rm = TRUE))
+
+# Get mean tightness by country
+ct_by_country <- data %>%
+  group_by(country) %>%
+  summarise(
+    mean_CT = mean(CT_mean, na.rm = TRUE),
+    n = n()
+  ) %>%
+  arrange(desc(mean_CT))
+
+print(ct_by_country)
+```
+
+## Selecting countries
+
+```{r}
+data %>%
+  mutate(CT_mean = rowMeans(select(., starts_with("CT_")), na.rm = TRUE)) %>%
+  group_by(country) %>%
+  summarise(mean_CT = mean(CT_mean, na.rm = TRUE), n = n()) %>%
+  filter(n >= 100) %>%  # Optional: filter for countries with decent sample sizes
+  ggplot(aes(x = reorder(country, mean_CT), y = mean_CT)) +
+  geom_col(fill = "#1a9850") +
+  coord_flip() +
+  labs(
+    title = "Mean Cultural Tightness Score by Country",
+    x = "Country",
+    y = "Mean CT Score"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Final Dot plot
+
+```{r}
+plot_data <- data %>%
+  filter(country %in% c("Argentina", "Greece", "Saudi Arabia")) %>%
+  mutate(CT_mean = rowMeans(select(., starts_with("CT_")), na.rm = TRUE))
+
+results <- plot_data %>%
+  group_by(country) %>%
+  do(tidy(lm(CT_mean ~ SocietalThreat_8, data = .))) %>%
+  filter(term == "SocietalThreat_8") %>%
+  select(country, estimate, std.error, p.value) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    p.value = signif(p.value, 3)
+  )
+
+ggplot(results, aes(x = reorder(country, estimate), y = estimate)) +
+  geom_point(size = 4, color = "#D55E00") +
+  geom_errorbar(aes(ymin = estimate - std.error, ymax = estimate + std.error), width = 0.1, color = "#D55E00") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  coord_flip() +
+  labs(
+    title = "Effect of COVID-19 Concern on Countries with Low, Moderate, and High Desire for Cultural Tightness",
+    subtitle = "Regression coefficients (β) with standard errors for each country",
+    x = "Country",
+    y = "Regression Coefficient (β)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+This is a very interesting output. As initial theory would suggest, one might expect a consistent pattern between COVID-19 concern and desire for cultural tightness depending on a country’s baseline tightness, but the betas for all three show no such output. This would naturally lead us to conclude that there's no significant national-level differences based on cultural tightness, but what if the three countries I selected just had the one unlucky outlier? So, I decided to check the statistical significance and direction of the relationship for each country in the dataset.
+
+## Plotting regression outputs
+
+```{r}
+country_lm_results <- data %>%
+  mutate(CT_mean = rowMeans(select(., starts_with("CT_")), na.rm = TRUE)) %>%
+  group_by(country) %>%
+  do(tidy(lm(CT_mean ~ SocietalThreat_8, data = .))) %>%
+  filter(term == "SocietalThreat_8") %>%
+  mutate(
+    estimate = round(estimate, 3),
+    p.value = signif(p.value, 3),
+    sig = ifelse(p.value < 0.05, "Yes", "No")
+  ) %>%
+  arrange(p.value)
+
+print(country_lm_results)
+country_counts <- data %>% count(country)
+large_countries <- country_counts %>% filter(n >= 100) %>% pull(country)
+
+filtered_results <- country_lm_results %>%
+  filter(country %in% large_countries)
+```
+
+```{r}
+ggplot(filtered_results, aes(x = reorder(country, estimate), y = estimate, color = sig)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_flip() +
+  labs(
+    title = "Effect of COVID-19 Concern on Cultural Tightness (by Country)",
+    x = "Country",
+    y = "Regression Coefficient (β)",
+    color = "Significant (p < .05)"
+  ) +
+  scale_color_manual(values = c("Yes" = "#D55E00", "No" = "gray60")) +
+  theme_minimal(base_size = 13)
+```
+
+This seems to confirm my initial hunch. There's only **10 countries** for which the relationship is statistically significant, so the association is not universal, and seems to be heavily dependent on national contexts. Most of them do not have a significant effect and there is no consistency in the direction of this effect either.
+
+Essentially, this relationship seems to be context-specific in countries; there's other country-specific psychological/social variables at play here that need to be explored.
+
+#### What does this mean for the regression I conducted previously?
+
+Well, countries like Mexico and France have strong positive slopes (β \> .25), and they pull the overall regression up. Basically, this seems to be a classic case of an ecological fallacy, and we've discovered that a relationship at the aggregate level does not mean it holds at the individual level in every subgroup. (viz., country).
+
+------------------------------------------------------------------------
+
+### **References:**
+
+-   Gelfand, M.J. (2011). DifferGelfand, Michele & Raver, Jana & Nishii, Lisa & Leslie, Lisa & Lun, Janetta & Lim, Beng & Duan, Lili & Almaliach, Assaf & Ang, Soon & Arnadottir, Jakobina & Aycan, Zeynep & Boehnke, Klaus & Boski, Pawel & Cabecinhas, Rosa & Chan, Darius & Chhokar, Jagdeep & D'Amato, Alessia & Ferrer, Montse & Fischlmayr, Iris & Yamaguchi, Susumu. (2011). Differences Between Tight and Loose Cultures: A 33-Nation Study. Science (New York, N.Y.). 332. 1100-4. doi:<https://doi.org/10.1126/science.1197754.>
+
+-   Jackson, J.C., van Egmond, M., Choi, V.K., Ember, C.R., Halberstadt, J., Balanovic, J., Basker, I.N., Boehnke, K., Buki, N., Fischer, R., Fulop, M., Fulmer, A., Homan, A.C., van Kleef, G.A., Kreemers, L., Schei, V., Szabo, E., Ward, C. and Gelfand, M.J. (2019). Ecological and cultural factors underlying the global distribution of prejudice. *PLOS ONE*, 14(9), p.e0221953. doi:<https://doi.org/10.1371/journal.pone.0221953.>

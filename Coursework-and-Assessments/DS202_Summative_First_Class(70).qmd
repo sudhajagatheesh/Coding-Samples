@@ -1,0 +1,1816 @@
+---
+title: DS202W - W10 Summative
+author: 38729
+output: html
+self-contained: true
+jupyter: python3
+engine: jupyter
+editor:
+  render-on-save: true
+  preview: true
+---
+```{python}
+# Installing all necessary packages for Part 1 and 2
+import pandas as pd
+%matplotlib inline
+import matplotlib.pyplot as plt
+import seaborn as sns
+!pip install sweetviz
+!pip install autoviz
+!pip install dtale
+!pip install category_encoders
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import RidgeCV
+from sklearn.model_selection import cross_val_score
+```
+
+# Part 1: 
+##### Q1, Q2a, Q2b, Q2c
+
+## Question 1
+
+```{python}
+# Loading our data
+yuan = pd.read_stata("Desktop/yuan_inflation_data.dta")
+
+# stats
+yuan.info()
+yuan.describe()
+yuan.head()
+```
+
+On first glance, the daataset appears to have 96 rows, with 12 variables. 
+Next, I generated an automatic exploratory data analysis report using the Sweetviz library. 
+This report includes variable distributions, value comparisons, correlations, and outlier detection.
+This is a useful starting point in helping us understand potential modelling challenges.
+
+#### What are the key takeaways from Sweetviz?:
+- `totalwar`, `nominal`, and `disaster` variables show significant variance across years, with long right-tails.
+- `cpi` is mostly stable but exhibits upward spikes in later years (this hints at hyperinflation!).
+- Most variables are complete and clean with no NaNs. So we do not have to impute any variables 
+
+```{python}
+import sweetviz as sv
+
+# Generating our report
+report = sv.analyze(yuan)
+
+# Save as HTML (NB: this opens in browser, not inline)
+report.show_html("sweetviz_yuan_report.html")
+```
+
+Next, I wanted to get some initial plots and correlations mapped out to understand the variables better. 
+
+Since Q2 asks us to look at `cpi`, I decided to grab the distribution and correlation heatmaps to study how it interacts with other variables.
+
+`Autoviz` does this for us, and also gives me a chance to just glance at other interactions and plots possible with the dataset, useful for some initial skimming. While there is a LOT of graphs plotted by `Autoviz`, we don't need to look at all of them, and I've generated the most important ones right below this next gode chunk.
+
+#### What are the Key Takeaways??
+1.  The distribution of **CPI** shows inflation was generally low but experienced sharp spikes: this is consistent with historical transitions to fiat currency.
+2. The **issuing of nominal money** is heavily right-skewed: there are large, substantial periods of monetary expansion!
+3. The correlation heatmap reveals clustering between CPI, nominal issuance, and warfare: This is suggesting a potential policy linkage!
+sign later in the assignment.
+
+```{python}
+from autoviz.AutoViz_Class import AutoViz_Class
+AV = AutoViz_Class()
+
+# Save to CSV
+yuan.to_csv("yuan.csv", index=False)
+
+av_report = AV.AutoViz(
+    filename="yuan.csv",
+    depVar="cpi",
+    verbose=1
+)
+```
+
+![CPI Distribution](AutoViz_Plots/Histogram_cpi.png)
+![Nominal Money](AutoViz_Plots/Histogram_nominal.png)
+![Correlation Heatmap](AutoViz_Plots/Correlation_Heatmap.png)
+
+## Question 2, Part A
+
+Here, I used `pandas.nlargest()` to extract the 10 years with the highest total warfare and nominal money issuance.
+
+```{python}
+# Top 10 years by total warfare
+top_wars = yuan.nlargest(10, 'totalwar')[['year', 'totalwar']].reset_index(drop=True)
+top_wars.columns = ['Year', 'Total Warfare']
+
+# Top 10 years by nominal money issues
+top_money = yuan.nlargest(10, 'nominal')[['year', 'nominal']].reset_index(drop=True)
+top_money.columns = ['Year', 'Nominal Money Issues']
+
+# overlapping years
+war_years = set(top_wars['Year'])
+money_years = set(top_money['Year'])
+overlap_years = sorted(war_years & money_years)
+
+print("Top 10 Years by Total Warfare:")
+display(top_wars)
+
+print("Top 10 Years by Nominal Money Issues:")
+display(top_money)
+
+print(f"Overlap Years ({len(overlap_years)}): {overlap_years}")
+```
+
+```{python}
+# Top 10 years by number of disasters
+top_disasters = yuan.nlargest(10, 'disaster')[['year', 'disaster']].reset_index(drop=True)
+top_disasters.columns = ['Year', 'Number of Disasters']
+
+# sets of years
+disaster_years = set(top_disasters['Year'])
+money_years = set(top_money['Year'])
+
+# Find overlap
+overlap_disaster_money = sorted(disaster_years & money_years)
+
+print("Top 10 Years by Disasters:")
+display(top_disasters)
+
+print(f"Overlap with Nominal Money Years ({len(overlap_disaster_money)}): {overlap_disaster_money}")
+```
+
+### What do the overlaps tell us?
+
+I identified the top 10 years for total warfare and the top 10 for nominal money issuance, and:
+
+1. **Top warfare years** include 1352, 1275, and 1355 (intense military activity toward both ends of the dynasty)
+2. **Top nominal issuance years** were 1355, 1310, 1354, and 1352 (notably clustered around the post-fiat period)
+
+**The final overlap years were**: **1352**, **1353**, **1355**
+                                                            
+> Glancing at the ReadMe file and dataset, we see the years fall within the final years of the Yuan Dynasty (which is a period of instability, military fragmentation, and hyperinflation.) 
+- The overlap supports the hypothesis that military expenditures were financed by money issuance, likely exacerbating inflation in the absence of a silver standard.
+
+### No overlap with disasters?
+
+While high-disaster years such as **1324**, **1329**, and **1328** marked humanitarian and economic crises, **none** of the top 10 disaster years overlapped with the top 10 years of nominal money issuance.
+
+> Basically, the Yuan government probably did not responded to natural disasters with aggresive monetary expansion 
+(Well, at least not at a level captured in the issuance data).
+
+Instead, large-scale money printing appears more tightly coupled with **warfare** and **late-dynastic fiscal instability**, rather than with disaster relief efforts.
+
+This contrast between **conflict-driven** and **disaster-driven** economic policy responses is interesting, and could be something we can explore in our modelling.
+
+## Question 2, Part C
+
+To visualise all variables together, I used the `MinMaxScaler` from **sklearn** to scale all variables between 0 and 1 (makes for a more robust comparison!).
+
+I also used `Plotly` to generate an interactive plot for this question, as it increases interpretability.
+
+```{python}
+import plotly.express as px
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+
+# Variables to scale
+cols_to_scale = ['cpi', 'totalwar', 'disaster', 'nominal']
+
+# Scale using sklearn
+scaler = MinMaxScaler()
+scaled = scaler.fit_transform(yuan[cols_to_scale])
+
+# Reshape for plotly 
+plot_df = yuan[['year']].copy()
+plot_df[['CPI (scaled)', 'Total Wars (scaled)', 'Disasters (scaled)', 'Nominal Money (scaled)']] = scaled
+
+
+plot_long = plot_df.melt(id_vars='year', var_name='Variable', value_name='Value')
+
+fig = px.line(
+    plot_long,
+    x='year',
+    y='Value',
+    color='Variable',
+    title='Evolution of CPI, Warfare, Disasters, and Money in the Yuan Dynasty',
+    labels={'Value': 'Scaled (0–1)', 'year': 'Year'},
+    template='plotly_white'
+)
+
+fig.update_traces(line=dict(width=3))
+fig.update_layout(
+    title_font_size=18,
+    legend_title_text='',
+    hovermode='x unified'
+)
+
+fig.show()
+```
+
+### What does this tell us?
+
+To ensure robust comparability, I scaled CPI, total warfare, disasters, and nominal money issuance to a common [0–1] range for comparative visualisation over time
+
+Clearly, we can see that:
+
+- **CPI** shows a steady climb, accelerating sharply after ~1340 — coinciding with monetary issuance and political instability.
+- **Total warfare** spikes in **1275** and again (rather dramatically!) between **1352–1355**, aligning closely with **inflation surges** and **money printing**.
+- **Disasters** remain relatively high and cyclical throughout, but they don not seem to show an obvious relationship with CPI or monetary response.
+- **Nominal money issuance** rises alongside CPI. **But this is only toward the end**, and this is consistent with the transition to **fiat currency** (post-1310) and war financing.
+
+> Overall, the plot supports my earlier findings, that **military and monetary instability**, rather than disasters, appear to be the key drivers of late-Yuan inflation.
+
+# Part 2
+
+We examined the distribution of our target variable, **CPI**, and observed a pronounced right skew with long upper tails. This aligns with historical evidence of inflation spikes (see Question 2, Part C!)
+Also, the non-normal distribution of CPI suggests potential issues with **linearity and homoscedasticity**, which already suggets that a standard linear regression model may have complications (as it assumes linearity and homoscedastic data!)
+
+So, I employed a linear regression *only* as a baseline starting point.
+
+```{python}
+plt.figure(figsize=(10, 5))
+sns.histplot(yuan['cpi'], bins=20, kde=True, color='indigo')
+plt.title("Distribution of CPI (Target Variable)")
+plt.xlabel("CPI")
+plt.ylabel("Frequency")
+plt.grid(alpha=0.3)
+plt.show()
+```
+
+```{python}
+# BASELINE Linear regression model:
+
+##Using all columns except year and cpi
+all_features = yuan.select_dtypes(include='number').drop(columns=['year', 'cpi']).columns.tolist()
+
+yuan_train = yuan[yuan['year'] < 1327].copy()
+yuan_test = yuan[yuan['year'] >= 1327].copy()
+
+X_train = yuan_train[all_features]
+X_test = yuan_test[all_features]
+y_train = yuan_train['cpi']
+y_test = yuan_test['cpi']
+
+# Preprocessor and Scaling
+preprocessor = ColumnTransformer([
+    ("scale", StandardScaler(), all_features)
+])
+
+# Pipeline
+pipeline = Pipeline([
+    ("preprocess", preprocessor),
+    ("regressor", LinearRegression())
+])
+
+# Fit
+pipeline.fit(X_train, y_train)
+
+# Predict
+y_train_pred = pipeline.predict(X_train)
+y_test_pred = pipeline.predict(X_test)
+
+# Metrics
+train_r2 = r2_score(y_train, y_train_pred)
+test_r2 = r2_score(y_test, y_test_pred)
+train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
+test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+(train_r2, test_r2, train_rmse, test_rmse)
+```
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# performance table
+metrics_table = pd.DataFrame({
+    'Metric': ['R²', 'RMSE'],
+    'Training': [round(train_r2, 2), round(train_rmse, 2)],
+    'Test': [round(test_r2, 2), round(test_rmse, 2)],
+    'Drop': [f"{round((train_r2 - test_r2) * 100, 1)}%", 
+             f"{round((train_rmse - test_rmse) * 100 / train_rmse, 1)}%"]
+})
+
+metrics_table.style.set_caption("Baseline Linear Regression Performance").format(precision=2)
+```
+
+```{python}
+# Coefficients from fitted model
+coefs = pipeline.named_steps['regressor'].coef_
+features_scaled = X_train.columns
+
+# dataframe
+coef_df = pd.DataFrame({
+    'Feature': features_scaled,
+    'Coefficient': coefs
+}).sort_values(by='Coefficient', key=abs, ascending=True)  
+
+#plot
+plt.figure(figsize=(10, 6))
+bars = plt.barh(coef_df['Feature'], coef_df['Coefficient'], color='mediumslateblue')
+
+# value labels
+for bar in bars:
+    width = bar.get_width()
+    plt.text(width + 0.01*np.sign(width), bar.get_y() + bar.get_height()/2,
+             f'{width:.2f}', va='center', ha='left' if width > 0 else 'right')
+
+plt.title("Feature Importance (Standardized Coefficients)")
+plt.xlabel("Coefficient (Standardized)")
+plt.axvline(0, color='grey', linestyle='--')
+plt.tight_layout()
+plt.grid(alpha=0.2)
+plt.show()
+```
+
+### Hmm... This is Interesting! 
+At first glance, the model seemed to be doing great on the training data (0.99 R²), but collapsed completely on the test set (with -0.66 R²!)  
+
+#### So, what is going on?
+
+One possible explanation is overfitting, where the model memorises noise in the training data instead of learning meaningful patterns.  
+To test this, I decided to try out **regularisation techniques**, like **Ridge** and **Lasso regression**, to see if they could reduce variance and help the model perform better on unseen data.
+
+The hope was that by constraining the model's complexity, it would focus more on the most relevant features and potentially handle the test years better.
+
+Before that, I also decided to engineer some features based on a literature review. The rationale for them is also in the table below. 
+
+## Tuning, Regularisation, Feature Engineering
+
+### What did I do?
+I created six new features, based on domain knowledge and the interesting trends we saw in Autoviz earlier.
+
+1. `log_nominal` : Diminishing returns of large monetary issuance; helps account for exponential inflation effects in high-nominal years.
+2. `nominal_per_capita` : Monetary pressure adjusted for population is a proxy for how inflationary money issuance felt per person.
+3.  `rebellion_pressure` : Social strain from simultaneous disasters and rebellions is good at capturing compound risk factors.
+4. `disaster_shifted`  : Lagged effect of disasters is also useful if inflation responded slowly to previous year's disasters.
+5. `emperor_change`   : Binary indicator of regime change assumes new emperors may change monetary/fiscal policy.
+6. `total_conflict`   : Overall conflict intensity; this adds together external, unification, and rebellion-based warfare.
+
+```{python}
+# Make a fresh copy so original data is safe
+yuan_feat = yuan.copy()
+
+# 1. log_nominal
+yuan_feat['log_nominal'] = np.log(yuan_feat['nominal'] + 1)
+
+# 2. nominal_per_capita
+yuan_feat['nominal_per_capita'] = yuan_feat['nominal'] / yuan_feat['pop']
+
+# 3. rebellion_pressure
+yuan_feat['rebellion_pressure'] = yuan_feat['rebellion'] * yuan_feat['disaster']
+
+# 4. disaster_shifted
+yuan_feat['disaster_shifted'] = yuan_feat['disaster'].shift(1).fillna(0)
+
+# 5. emperor_change (! 1 if emperor changed that year)
+yuan_feat['emperor_change'] = yuan_feat['emperor'].diff().fillna(0).ne(0).astype(int)
+
+# 6. total_conflict (sum of all wars)
+yuan_feat['total_conflict'] = yuan_feat['external'] + yuan_feat['rebellion'] + yuan_feat['unification']
+```
+
+Also, we must remember that the target variable is right-skewed!! In improving the model, I also chose to *log transform* it to address that. 
+> This technique is widely used in economic modeling and machine learning to improve normality and reduce heteroscedasticity (see Osborne, 2010).
+
+```{python}
+#log transformation 
+y_train_log = np.log1p(y_train)  # log1p = log(1 + x) avoids log(0)
+y_test_log = np.log1p(y_test)
+```
+
+### Choosing new models after the Baseline
+
+```{python}
+# Ridge Regression Model
+
+# Features
+selected_features = [
+    'log_nominal',
+    'nominal_per_capita',
+    'rebellion_pressure',
+    'disaster_shifted',
+    'emperor_change',
+    'total_conflict',
+    'pop',
+    'disaster'
+]
+
+# Train/Test Split
+X_train = yuan_feat[yuan_feat['year'] < 1327][selected_features]
+X_test = yuan_feat[yuan_feat['year'] >= 1327][selected_features]
+
+y_train_log = np.log1p(yuan_feat[yuan_feat['year'] < 1327]['cpi'])
+y_test_log = np.log1p(yuan_feat[yuan_feat['year'] >= 1327]['cpi'])
+
+# Preprocessing + Model
+preprocessor = ColumnTransformer([
+    ("scale", StandardScaler(), selected_features)
+])
+
+ridge_pipeline = Pipeline([
+    ("preprocess", preprocessor),
+    ("ridge", RidgeCV(alphas=np.logspace(-3, 3, 100)))
+])
+
+#  Fit on training set
+ridge_pipeline.fit(X_train, y_train_log)
+
+# Predict on test (log scale) 
+y_test_pred_log = ridge_pipeline.predict(X_test)
+
+# Back-transform to original CPI scale
+y_test_pred = np.expm1(y_test_pred_log)
+y_test_true = np.expm1(y_test_log)
+
+# Metrics
+cv_r2_scores = cross_val_score(ridge_pipeline, X_train, y_train_log, cv=5, scoring='r2')
+cv_r2_mean = np.mean(cv_r2_scores)
+
+test_r2 = r2_score(y_test_true, y_test_pred)
+test_rmse = np.sqrt(mean_squared_error(y_test_true, y_test_pred))
+
+cv_r2_mean, test_r2, test_rmse
+```
+
+### The Ridge Regression is still not that good. So, what's going on?
+
+While our baseline model (trained on data before 1327) performed reasonably, attempts to improve it using advanced techniques (regularisation, feature engineering) led to worse performance on the test set. I think this is not because of a failure in modeling (after all this is straightforward code), but a reflection of a **fundamental structural break** in the data. I say this because post-1327, the Yuan Dynasty entered a period of runaway inflation, with CPI rising more than 3× in under 15 years (see Part 1!). These changes likely stem from the regime introduction of unbacked fiat currency, mass issuance of paper money, and political instability.No amount of modeling can compensate for a train-test split where the target variable behaves completely differently in the test set.
+
+> This is *a Distribution Shift Problem!* 
+>Basically, the model was trained primarily on years with relatively stable or mild inflation, but tested on a period marked by extreme inflation volatility.  
+>This reflects a classic case of **distribution shift** or **covariate shift**, where the conditions the model was trained on no longer hold during testing (Quionero-Candela et al., 2009).
+
+Basically, my model was learning from "normal" economic conditions and then asked to predict outcomes during a fiscal crisis.  A more intuitive way to understand this is to imagine training a model on baguette prices in Paris and then expecting it to predict the same prices in a warzone. Quite tricky, right? The context is so different that the learned patterns break down completely, which is what happened here. 
+
+So this explains why the model performed well on training data but failed to generalise! (as seen in the sharp drop in test R² and spike in RMSE.) 
+
+# Part 2, Question 2:
+
+### Model Selection Strategy
+
+After the Ridge model failed to generalise on post-1327 data, I formed a working hypothesis: **maybe no model could perform well on this test set**, simply because of the structural break in CPI.
+
+#### So how do we select/determine models for improvement? 
+
+Given that my earlier model struggled to generalise post-1327, I wanted a way to quickly scan through multiple regressors without needing to configure and test each one manually.
+
+`LazyPredict` allowed me to do exactly that — it runs a suite of common regressors using default settings and outputs performance metrics in a single dataframe. This gave me a useful, reproducible baseline for comparing models side by side (also pretty handy!)
+
+My idea here wasn’t to find a final model, but to **avoid anchoring too early** and wasting time manually coding each model.  Instead of relying on assumptions about what "should" work, I could see which models empirically performed well on my data, decide which ones were worth tuning properly.
+
+Of course, `LazyPredict` has limitations. It doesn’t support time-aware splits, skips hyperparameter tuning, and doesn’t allow much control over preprocessing. But for this stage, I found it really helpful in nudging me beyond just linear models and toward more flexible options for the next round of testing (plus since our data is split with clear time boundaries we don't need to worry too much about time-sensisitivity).
+
+```{python}
+!pip install lazypredict
+
+from lazypredict.Supervised import LazyRegressor
+from sklearn.model_selection import train_test_split
+import pandas as pd
+
+# Simple features
+selected_features = ['nominal_per_capita', 'pop', 'disaster', 'totalwar', 'rebellion']
+X = yuan_feat[selected_features]
+y = yuan_feat['cpi']
+
+# Train/test split based on year
+X_train = X[yuan_feat['year'] < 1327]
+X_test = X[yuan_feat['year'] >= 1327]
+y_train = y[yuan_feat['year'] < 1327]
+y_test = y[yuan_feat['year'] >= 1327]
+
+# Run LazyRegressor
+reg = LazyRegressor(verbose=0, ignore_warnings=True)
+models, predictions = reg.fit(X_train, X_test, y_train, y_test)
+
+# Show top 10
+models.head(10)
+```
+
+### What do all these performance metrics tell us? 
+ 
+Running `LazyPredict` helped confirm my hypothesis! Across the board, models performed worse than my Ridge baseline, even those typically robust to noise or overfitting.
+
+But that raised a different question: **what if the problem isn’t with the data, but with the target?**
+
+Instead of trying to predict raw CPI levels, I decided to test whether using **ΔCPI (year-on-year inflation change)** could improve performance.  
+> This is a common approach in macroeconomic modeling, where changes tend to be more stationary and interpretable than levels.
+
+Maybe, just maybe, this wasn’t a modeling failure, but a **feature engineering issue** in disguise.
+
+---
+NB: 
+> *This shift also aligns with best practice in economic forecasting, where inflation changes are often used in place of levels:*  
+> • Stock, J.H., & Watson, M.W. (2007). *Why Has U.S. Inflation Become Harder to Forecast?*  
+> • Sims, C.A. (1992). *Interpreting the Macroeconomic Time Series Facts: The Effects of Monetary Policy*
+---
+
+### Is it Feature Engineering?
+
+After testing LazyPredict, I circled back to Ridge regression using `ΔCPI` (year-on-year inflation change) as the target variable instead of CPI levels.  
+The rationale here was to account for the structural break post-1327 and shift the focus to relative changes in inflation, which are often more stable and policy-relevant.
+
+I used a Ridge model with 5-fold cross-validation on pre-1327 data, then tested the model on post-1327 observations.  
+To avoid data leakage and maintain consistent scaling, I built a pipeline that included standardisation and hyperparameter tuning over a log-scaled alpha grid.
+
+---
+
+The model **still failed to generalise**, with **Test R² = -0.66** and an **RMSE of 4.21**, despite shifting the target variable.  
+This reinforces the idea that the inflation dynamics post-1327 are fundamentally different and hard to capture using pre-1327 training data alone.
+
+The cross-validated R² of **-8.58** also confirms that even within the training set, the model struggled to generalise consistently, likely due to noise, limited sample size, or unmodeled nonlinearities.
+
+---
+
+While the shift to ΔCPI was conceptually sound and aligned with macroeconomic best practices, the results suggest that **no linear model** trained solely on earlier data could capture the volatility that followed.
+
+```{python}
+# Create delta_cpi as target
+yuan['delta_cpi'] = yuan['cpi'].diff()
+yuan = yuan.dropna(subset=['delta_cpi']).reset_index(drop=True)
+
+# Feature engineering
+yuan['nominal_per_capita'] = yuan['nominal'] / yuan['pop']
+
+selected_features = [
+    'nominal_per_capita',
+    'pop',
+    'disaster',
+    'rebellion',
+    'totalwar'
+]
+
+# split
+X_train = yuan[yuan['year'] < 1327][selected_features]
+X_test = yuan[yuan['year'] >= 1327][selected_features]
+y_train = yuan[yuan['year'] < 1327]['delta_cpi']
+y_test = yuan[yuan['year'] >= 1327]['delta_cpi']
+
+
+preprocessor = ColumnTransformer([
+    ("scale", StandardScaler(), selected_features)
+])
+
+ridge_pipeline = Pipeline([
+    ("preprocess", preprocessor),
+    ("ridge", RidgeCV(alphas=np.logspace(-3, 3, 100)))
+])
+
+# Fit & predict
+ridge_pipeline.fit(X_train, y_train)
+y_test_pred = ridge_pipeline.predict(X_test)
+
+# Evaluate
+cv_r2_scores = cross_val_score(ridge_pipeline, X_train, y_train, cv=5, scoring='r2')
+cv_r2_mean = np.mean(cv_r2_scores)
+test_r2 = r2_score(y_test, y_test_pred)
+test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+
+# Output
+import pandas as pd
+from IPython.display import display
+
+metrics_table = pd.DataFrame({
+    "Metric": ["Cross-Validated R²", "Test R²", "Test RMSE"],
+    "Value": [round(cv_r2_mean, 2), round(test_r2, 2), round(test_rmse, 2)],
+    "Interpretation": [
+        "How stable the model is on training data (CV)",
+        "How well the model predicts unseen test data",
+        "Average prediction error on test data (ΔCPI)"
+    ]
+})
+
+display(metrics_table)
+```
+
+```{python}
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 5))
+plt.plot(y_test.values, label="Actual ΔCPI", marker='o')
+plt.plot(y_test_pred, label="Predicted ΔCPI", marker='x')
+plt.title("Predicted vs Actual Year-on-Year CPI Change (Test Set)")
+plt.xlabel("Test Set Year Index")
+plt.ylabel("ΔCPI")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+# Part 3
+
+### Preparing Data for Interest Rate Modeling
+
+To model Bank of England interest rate decisions, I merged the BoE rate-setting data with monthly economic indicators.  
+Since the task focused on the effect of **recent economic conditions**, I computed the average of each indicator over the **3 months prior to each decision date** as asked in the question as well.
+
+---
+
+### Rate Change Variable
+
+The target variable, `rate_change`, seems to have two possible values based on our EDA:  
+- `-1` for a rate **cut**,
+- `+1` for a **rate hike**.  
+
+To better understand class distribution, I plotted the frequency of decisions across these categories.  
+Essentially, the distribution revealed data was relatively balanced between cuts (32) and hikes (36), which is ideal for classification models.
+[NB: Even though this is ideal, the small class imbalance might still influence results, and I will look at ways to address this later on!]
+---
+
+### Handling Missing Values
+
+I discovered one row (dated 2025-02-06) with missing economic indicators, and this makes sense! As February 2025 just passed by and there is not enough data to compute the average for this quarter. 
+Rather than impute based on limited samples, I chose to **drop this single row**, reducing the dataset from 68 to 67 observations.  
+This is so we get a clean dataset with **no remaining NaNs** (essential for pipeline-based modeling which I do later!)
+
+```{python}
+# Load Bank of England interest rate data
+boe_df = pd.read_csv("Desktop/BoE_interest_rates.csv")
+
+# Load monthly economic indicators (GDP, CPIH, etc.)
+indicators_df = pd.read_csv("Desktop/economic_indicators_interest_rate_setting.csv")
+
+# Rename for clarity
+indicators_df.columns = [
+    "date", "cci", "unemployment_rate", "gilt_yield",
+    "cpih", "gva", "usd_exchange", "eur_exchange"
+]
+
+#Convert date columns to datetime format
+boe_df["Date"] = pd.to_datetime(boe_df["Date"])
+indicators_df["date"] = pd.to_datetime(indicators_df["date"])
+
+# For each BoE interest rate decision, I'll compute the avg of the last 3 months of indicators as mentioned in the question
+def get_last_quarter_averages(decision_date, indicators):
+    mask = (indicators["date"] < decision_date) & (indicators["date"] >= decision_date - pd.DateOffset(months=3))
+    return indicators.loc[mask].drop(columns="date").mean()
+
+# Then, I apply this logic across the whole BoE dataframe
+quarterly_avgs = []
+for decision_date in boe_df["Date"]:
+    avg = get_last_quarter_averages(decision_date, indicators_df)
+    quarterly_avgs.append(avg)
+quarterly_df = pd.DataFrame(quarterly_avgs)
+boe_merged = pd.concat([boe_df.reset_index(drop=True), quarterly_df.reset_index(drop=True)], axis=1)
+
+boe_merged.head()
+```
+
+```{python}
+# Check the columns of the individual datasets
+print("BoE Dataset Columns:")
+print(boe_df.columns)
+
+print("\nEconomic Indicators Dataset Columns:")
+print(indicators_df.columns)
+```
+
+```{python}
+# Check frequency of rate-setting events
+boe_df["year_month"] = boe_df["Date"].dt.to_period("M")
+rate_counts = boe_df["year_month"].value_counts().sort_index()
+
+# Plot how often decisions occur over time
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 4))
+rate_counts.plot(kind="bar")
+plt.title("Frequency of BoE Rate-Setting Events (Monthly)")
+plt.xlabel("Year-Month")
+plt.ylabel("Number of Decisions")
+plt.xticks(rotation=45, ha="right")
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Inspect rate_change distribution (raw counts + plot)
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Count number of decisions by class
+rate_counts = boe_merged["rate_change"].value_counts().sort_index()
+
+# Plot class distribution
+plt.figure(figsize=(4, 4))
+sns.barplot(x=rate_counts.index, y=rate_counts.values, palette="Set2")
+plt.title("Distribution of BoE Rate Change Decisions")
+plt.xlabel("Rate Change")
+plt.ylabel("Number of Events")
+plt.xticks(ticks=[-1, 1], labels=["-1 (Cut)", "+1 (Hike)"])
+plt.grid(axis='y', alpha=0.2)
+plt.tight_layout()
+plt.show()
+
+# print raw counts
+print("Rate Change Class Counts:")
+print(rate_counts)
+```
+
+```{python}
+import matplotlib.pyplot as plt
+
+# Filter relevant columns
+timeline_df = boe_merged[["Date", "rate_change"]].dropna().sort_values("Date")
+
+# Plot
+plt.figure(figsize=(14, 3))
+plt.scatter(timeline_df["Date"], timeline_df["rate_change"],
+            c=timeline_df["rate_change"].map({-1: "red", 1: "green"}),
+            label="Rate Change", alpha=0.7)
+
+plt.axhline(0, color="grey", linestyle="--", linewidth=1)
+plt.title("Timeline of Rate Cuts (-1) and Hikes (+1)")
+plt.xlabel("Date")
+plt.ylabel("Rate Decision")
+plt.yticks([-1, 0, 1], ["Cut", "Hold", "Hike"])
+plt.grid(True, linestyle="--", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Converting Dates to Year so we can use it as a categorical variable
+boe_merged["year"] = pd.to_datetime(boe_merged["Date"]).dt.year
+
+# Show all rows that contain missing values
+missing_rows = boe_merged[boe_merged.isnull().any(axis=1)]
+
+# Display the row(s)
+print("Rows with missing values:")
+missing_rows
+```
+
+```{python}
+# How many rows BEFORE cleaning?
+print(f"Rows before cleaning: {boe_merged.shape[0]}")
+
+# Drop rows with missing values
+boe_clean = boe_merged.dropna().reset_index(drop=True)
+
+# How many rows AFTER cleaning + confirm all NaNs are gone
+print(f"Rows after cleaning: {boe_clean.shape[0]}")
+print("\nAny missing values left?")
+print(boe_clean.isnull().sum())
+```
+
+## Part 3, Question 2: Baseline Linear Regression Model
+
+### Building the Baseline Logistic Classifier
+
+For the baseline model, I used a `LogisticRegression` classifier within a pipeline that also includes `StandardScaler` for normalization.  
+To respect temporal ordering, I used `TimeSeriesSplit` for 5-fold cross-validation, evaluating performance using the **macro F1 score**, which handles class imbalance more fairly.
+
+This baseline helps establish whether simple linear decision boundaries can explain rate change dynamics based on macroeconomic indicators.
+
+```{python}
+from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import f1_score, classification_report
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Features and target
+features = ["cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "usd_exchange", "eur_exchange", "year"]
+target = "rate_change"
+
+# Drop rows with missing values
+X_full = boe_merged[features].dropna()
+y_full = boe_merged.loc[X_full.index, target]
+dates = boe_merged.loc[X_full.index, "Date"]
+
+# Manual 70/30 time-aware split
+sorted_dates = dates.sort_values()
+split_index = int(len(sorted_dates) * 0.7)
+cutoff_date = sorted_dates.iloc[split_index]
+
+train_mask = dates <= cutoff_date
+test_mask = dates > cutoff_date
+
+X_train, X_test = X_full.loc[train_mask], X_full.loc[test_mask]
+y_train, y_test = y_full.loc[train_mask], y_full.loc[test_mask]
+
+# Build pipeline: scaling + logistic regression
+pipe = Pipeline([
+    ("scale", StandardScaler()),
+    ("clf", LogisticRegression(max_iter=1000))
+])
+
+# Time-aware CV within training set
+tscv = TimeSeriesSplit(n_splits=4)
+cv_scores = cross_val_score(pipe, X_train, y_train, cv=tscv, scoring="f1_macro")
+
+print("TimeSeriesSplit Macro F1 scores:", cv_scores)
+print(f"Mean CV Macro F1: {np.mean(cv_scores):.3f}")
+
+# Fit on full training set and evaluate on test set
+pipe.fit(X_train, y_train)
+y_pred = pipe.predict(X_test)
+
+# Final test set evaluation
+f1 = f1_score(y_test, y_pred, average="macro")
+print(f"\nFinal Test Set Macro F1 Score: {f1:.3f}")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, digits=3))
+
+# Coefficient interpretation
+coefs = pipe.named_steps["clf"].coef_[0]
+coef_df = pd.DataFrame({
+    "Feature": X_train.columns,
+    "Coefficient": coefs
+}).sort_values(by="Coefficient", key=abs, ascending=True)
+
+plt.figure(figsize=(8, 5))
+sns.barplot(data=coef_df, y="Feature", x="Coefficient", palette="coolwarm")
+plt.axvline(0, color="grey", linestyle="--")
+plt.title("Logistic Regression Coefficients")
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+# Wrap CV scores into a DataFrame
+f1_df = pd.DataFrame({
+    "Fold": [f"Fold {i+1}" for i in range(len(cv_scores))],
+    "Macro F1 Score": cv_scores
+})
+
+# Plot
+plt.figure(figsize=(8, 5))
+sns.lineplot(data=f1_df, x="Fold", y="Macro F1 Score", marker="o", linewidth=2, color="firebrick")
+plt.title("Macro F1 Score Across TimeSeriesSplit Folds (Training Set Only)", fontsize=13)
+plt.ylim(0, 1)
+plt.grid(True, linestyle="--", alpha=0.5)
+plt.tight_layout()
+plt.show()
+```
+
+### Baseline Model Performance 
+
+While the model performed moderately well during cross-validation (mean Macro F1 ≈ 0.40),  
+it generalisation to the post-cutoff test set failed (**Macro F1 of just 0.167** and no correct predictions for rate hikes).
+
+Basically, our model correctly predicts cuts, but that is the only class it predicts!
+
+This may be due to:
+- **Insufficient hike examples** in the training data (maybe the dataset is too small, etc), or
+- A model that overfits cuts but never learned what drives hikes.
+
+Ultimately, this confirms that simple linear classification struggles to capture the conditions driving policy changes, especially when trained on one period and tested on another.
+
+### Which features should I be using?
+
+However, to understand what the model learned, I needed to extract the logistic regression coefficients.  
+These reflect the relative influence of each feature on predicting rate hikes versus cuts.
+    
+- **Positive coefficients** indicate a higher likelihood of a hike.  
+- **Negative coefficients**, if present, would push toward a cut.
+
+In this case, **`gilt_yield`**, **`cpih`**, and **`cci`** were the strongest positive predictors of rate hikes.  
+[NB: This aligns well with economic theory too!: rising bond yields and consumer confidence often signal tightening conditions.]
+
+```{python}
+# Using SMOTE and studying thresholds to look at class imbalance
+from sklearn.metrics import (
+    f1_score, classification_report,
+    average_precision_score, precision_recall_curve
+)
+from imblearn.over_sampling import SMOTE
+
+# features and target
+features = ["cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "usd_exchange", "eur_exchange", "year"]
+X = boe_merged[features].dropna()
+y = boe_merged.loc[X.index, "rate_change"]
+
+# binary classification
+assert sorted(y.unique()) == [-1, 1]
+
+# time-aware cross-validation
+tscv = TimeSeriesSplit(n_splits=5)
+f1_scores, weighted_f1_scores, pr_auc_scores = [], [], []
+
+final_probs, final_true = None, None
+
+# Loop through folds
+for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    # Scale features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Applying SMOTE to training data ONLY!
+    sm = SMOTE(random_state=42)
+    X_train_bal, y_train_bal = sm.fit_resample(X_train_scaled, y_train)
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train_bal, y_train_bal)
+
+    # Predict
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+    if fold == 4:
+        final_probs = y_proba
+        final_true = y_test
+
+    # Predict with threshold = 0.5
+    y_pred = (y_proba >= 0.5).astype(int) * 2 - 1
+
+    # Scores
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
+    weighted_f1 = f1_score(y_test, y_pred, average="weighted")
+    pr_auc = average_precision_score((y_test == 1).astype(int), y_proba)
+
+    f1_scores.append(macro_f1)
+    weighted_f1_scores.append(weighted_f1)
+    pr_auc_scores.append(pr_auc)
+
+    print(f"Fold {fold+1} — Macro F1: {macro_f1:.3f} | Weighted F1: {weighted_f1:.3f} | PR-AUC: {pr_auc:.3f}")
+    print(classification_report(y_test, y_pred, digits=3))
+
+# Threshold tuuning (on final fold only!!)
+true_bin = (final_true == 1).astype(int)
+prec, rec, thresh = precision_recall_curve(true_bin, final_probs)
+f1_thresh = [f1_score(true_bin, (final_probs >= t).astype(int)) for t in thresh]
+best_thresh = thresh[np.argmax(f1_thresh)]
+
+# Plot
+plt.figure(figsize=(6, 4))
+plt.plot(thresh, prec[:-1], label="Precision", color="red")
+plt.plot(thresh, rec[:-1], label="Recall", color="blue")
+plt.xlabel("Probability Threshold")
+plt.ylabel("Score")
+plt.title("Precision and Recall vs Threshold (Final Fold)")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.4)
+plt.tight_layout()
+plt.show()
+
+print(f"Best threshold based on final fold F1 score: {best_thresh:.2f}")
+```
+
+## Part 3, Question 3
+
+## Model Selection Strategy
+
+After evaluating the baseline logistic regression, I observed considerable variance in performance across folds, particularly poor generalisation under minor class imbalance. 
+
+After looking at the trends in performance, all signs point to a Random Forest Model as being the strongest contender for this dataset! 
+I would argue there's 5 main reasons for making this decision:
+                                                                                                                     
+- **Handles Non-linearity**: Monetary policy decisions are usually non-linear. Random Forests can capture interaction effects (e.g. basically, like how CPIH and gilt yields jointly inform hikes).
+- **Robust to Noise and Small Datasets**: Unlike deep learning models, RFs perform well with limited samples + are less sensitive to outliers.
+- **No Need for Extensive Preprocessing**: They handle unscaled features well (+ handle NaNs well, even though we have none!)
+- **Built-in Feature Importance**: This supports interpretability!
+- **Good with Imbalanced Data**: Through class weighting or balanced subsampling.
+
+### However, WHY did I choose Time-Aware Validation?
+
+To avoid data leakage and respect temporal structure:
+- I used `TimeSeriesSplit` to ensure the model is always tested on **future unseen events**.
+- Hyperparameters were tuned using `GridSearchCV` embedded within the time-series folds.
+
+### Why I Skipped a 70/30 Split?
+
+I decided to rely on `TimeSeriesSplit` for model evaluation. The main reason is the small size of my dataset; 
+after cleaning, only 67 rows remained. Holding out 30% of those for testing would have left me with fewer than 50 training points, 
+which risks underfitting and unstable performance.
+
+Instead, I used `TimeSeriesSplit`, which maintains the chronological structure of the data while making better use of limited observations. 
+Each fold simulates a real-world forecasting scenario: the model trains on earlier periods and predicts on later ones. 
+
+[NB!: This choice is supported by literature: when datasets are small and time-ordered, cross-validation using rolling or expanding windows is preferred over a single holdout split (Hyndman & Athanasopoulos, 2018).
+Forecasting literature (*Bergmeir & Benítez, 2012*) also tells us that tree-based ensembles paired with time-aware validation outperform linear models in economic prediction settings, which is another reason why I wanted to employ this.]
+
+```{python}
+## First Random Forest Model with a 70/30 split (to level with the baseline linear model we had previously)
+
+# Feature Engineering
+boe_merged["real_gva"] = boe_merged["gva"] / boe_merged["cpih"]
+boe_merged["cpih_to_gilt"] = boe_merged["cpih"] / boe_merged["gilt_yield"]
+boe_merged["exchange_volatility"] = (boe_merged["usd_exchange"] - boe_merged["eur_exchange"]).abs()
+
+# Setup
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "cpih", "gva",
+    "usd_exchange", "eur_exchange", "real_gva", "cpih_to_gilt", "exchange_volatility"
+]
+target = "rate_change"
+
+df = boe_merged.replace([np.inf, -np.inf], np.nan)
+df = df.dropna(subset=features + [target, "Date"]).sort_values("Date")
+
+# chronological 70/30 splitting
+split_index = int(len(df) * 0.7)
+train_df = df.iloc[:split_index]
+test_df = df.iloc[split_index:]
+
+X_train, y_train = train_df[features], train_df[target]
+X_test, y_test = test_df[features], test_df[target]
+
+# smote
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+sm = SMOTE(random_state=42)
+X_train_bal, y_train_bal = sm.fit_resample(X_train_scaled, y_train)
+
+# training
+model = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=5,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    random_state=42
+)
+model.fit(X_train_bal, y_train_bal)
+
+y_proba = model.predict_proba(X_test_scaled)[:, 1]
+threshold = 0.59
+y_pred = (y_proba >= threshold).astype(int) * 2 - 1  # Convert to -1 / 1
+
+print("Classification Report (Test Set):")
+print(classification_report(y_test, y_pred, digits=3))
+
+# conf. matrix 
+cm = confusion_matrix(y_test, y_pred, labels=[-1, 1])
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Cut (-1)", "Hike (+1)"])
+disp.plot(cmap="Blues")
+plt.title("Confusion Matrix (70/30 Time-Based Split)")
+plt.grid(False)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    f1_score, classification_report,
+    average_precision_score, precision_recall_curve
+)
+from imblearn.over_sampling import SMOTE
+import matplotlib.pyplot as plt
+import numpy as np
+
+# features and target
+features = ["cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "usd_exchange", "eur_exchange"]
+X = boe_merged[features].dropna()
+y = boe_merged.loc[X.index, "rate_change"]
+
+assert sorted(y.unique()) == [-1, 1]  # Make sure it's binary
+
+tscv = TimeSeriesSplit(n_splits=5)
+f1_scores, weighted_f1_scores, pr_auc_scores = [], [], []
+final_probs, final_true = None, None
+
+for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    sm = SMOTE(random_state=42)
+    X_train_bal, y_train_bal = sm.fit_resample(X_train_scaled, y_train)
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42
+    )
+    model.fit(X_train_bal, y_train_bal)
+
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+
+    if fold == 4:
+        final_probs = y_proba
+        final_true = y_test
+
+    y_pred = (y_proba >= 0.5).astype(int) * 2 - 1
+
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
+    weighted_f1 = f1_score(y_test, y_pred, average="weighted")
+    pr_auc = average_precision_score((y_test == 1).astype(int), y_proba)
+
+    f1_scores.append(macro_f1)
+    weighted_f1_scores.append(weighted_f1)
+    pr_auc_scores.append(pr_auc)
+
+    print(f"Fold {fold+1} — Macro F1: {macro_f1:.3f} | Weighted F1: {weighted_f1:.3f} | PR-AUC: {pr_auc:.3f}")
+    print(classification_report(y_test, y_pred, digits=3))
+
+# threshold tuning (on final fold)
+true_bin = (final_true == 1).astype(int)
+prec, rec, thresh = precision_recall_curve(true_bin, final_probs)
+f1_thresh = [f1_score(true_bin, (final_probs >= t).astype(int)) for t in thresh]
+best_thresh = thresh[np.argmax(f1_thresh)]
+
+plt.figure(figsize=(6, 4))
+plt.plot(thresh, prec[:-1], label="Precision", color="red")
+plt.plot(thresh, rec[:-1], label="Recall", color="blue")
+plt.xlabel("Probability Threshold")
+plt.ylabel("Score")
+plt.title("Precision and Recall vs Threshold (Final Fold)")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.4)
+plt.tight_layout()
+plt.show()
+
+print(f"Best threshold based on final fold F1 score: {best_thresh:.2f}")
+```
+
+```{python}
+## Random Forest Model:
+# Feature prep
+features = ["cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "usd_exchange", "eur_exchange"]
+target = "rate_change"
+
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan)
+y = boe_merged[target]
+mask = X.notnull().all(axis=1) & y.notnull()
+X = X[mask]
+y = y[mask]
+dates = boe_merged.loc[X.index, "Date"]
+
+# final hold-out split 
+sorted_dates = dates.sort_values()
+cutoff_idx = int(len(sorted_dates) * 0.8)
+cutoff_date = sorted_dates.iloc[cutoff_idx]
+
+train_mask = dates <= cutoff_date
+test_mask = dates > cutoff_date
+
+X_train, X_test = X.loc[train_mask], X.loc[test_mask]
+y_train, y_test = y.loc[train_mask], y.loc[test_mask]
+
+# Class distribution (train vs test)
+train_dist = y_train.value_counts(normalize=True).sort_index()
+test_dist = y_test.value_counts(normalize=True).sort_index()
+
+class_dist_df = pd.DataFrame({
+    "Train %": train_dist * 100,
+    "Test %": test_dist * 100
+}).fillna(0).round(2)
+
+display(class_dist_df)
+
+# Cross-validation on training set only
+tscv = TimeSeriesSplit(n_splits=4)
+f1_scores = []
+class_scores = []
+
+for fold, (train_idx, val_idx) in enumerate(tscv.split(X_train)):
+    X_fold_train, X_fold_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+    y_fold_train, y_fold_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+    rf_pipe = Pipeline([
+        ("rf", RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            min_samples_split=2,
+            class_weight="balanced",
+            random_state=42
+        ))
+    ])
+
+    rf_pipe.fit(X_fold_train, y_fold_train)
+    y_pred = rf_pipe.predict(X_fold_val)
+
+    f1 = f1_score(y_fold_val, y_pred, average="macro")
+    f1_scores.append(f1)
+
+    _, _, f1_per_class, _ = precision_recall_fscore_support(
+        y_fold_val, y_pred, labels=[-1, 0, 1], zero_division=0
+    )
+    class_scores.append(f1_per_class)
+
+    print(f"Fold {fold + 1} — Macro F1: {f1:.3f}")
+
+# Evaluate on final test set
+rf_pipe.fit(X_train, y_train)
+y_test_pred = rf_pipe.predict(X_test)
+final_test_f1 = f1_score(y_test, y_test_pred, average="macro")
+print("\nFinal Hold-Out Test Set Results:")
+print(f"Macro F1: {final_test_f1:.3f}")
+print(classification_report(y_test, y_test_pred, digits=3))
+
+# Extract feature importances from final model
+final_rf_model = rf_pipe.named_steps["rf"]
+importances = final_rf_model.feature_importances_
+
+# Create DataFrame
+feat_imp_df = pd.DataFrame({
+    "Feature": X_train.columns,
+    "Importance": importances
+}).sort_values("Importance", ascending=True)
+
+# Plot
+plt.figure(figsize=(8, 5))
+sns.barplot(data=feat_imp_df, x="Importance", y="Feature", palette="Greys")
+plt.title("Feature Importances — Random Forest (Final Model)")
+plt.xlabel("Mean Decrease")
+plt.tight_layout()
+plt.show()
+```
+
+### What does this output mean?
+
+After using `TimeSeriesSplit` to cross-validate on the training data, I tested the model on a final hold-out set that covers the most recent 20% of dates. 
+- The idea here was to mimic a real forecasting task, where we use past information to predict future rate changes.
+
+The macro F1 scores during cross-validation were all over the place, ranging from 0.231 to 0.792. Some folds worked surprisingly well, others barely captured anything. 
+- Basically, on the final test set, the macro F1 came out to 0.435. (Not amazing, but not bad considering the imbalance!)
+- The test set had 11 rate hikes and only 2 cuts. The model predicted the hikes really well, but didn’t catch either of the cuts. 
+- So the F1 for that class was literally zero.
+
+This makes the macro F1 a bit harsh. It averages the performance across both classes, even though one of them barely shows up in the test set. 
+If we look at the weighted F1 instead, it’s 0.736, which feels more fair since it reflects how well the model did overall.
+
+That said, the mismatch in class distributions between training and test (almost balanced vs totally skewed) probably hurt the model’s ability to generalise. 
+
+We know the best threshold to avoid class imbalance, so that's one way to improve model performance. 
+BUT, I was also curious about engineering some features like in Part 2!
+
+So I tried engineering some additional features based on domain knowledge, creating 3 new ones:
+
+- `real_gva`: GVA adjusted for inflation (i.e. dividing nominal GVA by the inflation index `cpih`). This gives us a proxy for **real economic output**, which might better reflect actual purchasing power and economic strain.
+- `cpih_to_gilt`: Ratio of inflation to the government borrowing rate. This captures the **relative pressure between price levels and monetary policy**, and might indicate when inflation is outpacing interest rate responses.
+- `exchange_volatility`: The absolute difference between the USD and EUR exchange rates. I used this as a rough proxy for **market uncertainty** or instability across major trading partners.
+None of the variables are highly correlated, so we are good to use all of them (to start with!) as features.
+
+```{python}
+### Feature Engineering
+
+# GVA adjusted for inflation
+boe_merged["real_gva"] = boe_merged["gva"] / boe_merged["cpih"]
+
+# Inflation relative to government borrowing rate
+boe_merged["cpih_to_gilt"] = boe_merged["cpih"] / boe_merged["gilt_yield"]
+
+# Market uncertainty
+boe_merged["exchange_volatility"] = (boe_merged["usd_exchange"] - boe_merged["eur_exchange"]).abs()
+
+# Sanity check: did they get added?
+boe_merged[["real_gva", "cpih_to_gilt", "exchange_volatility"]].head()
+
+```
+
+```{python}
+import numpy as np
+
+# calculate and plot correlation matrix
+corr = boe_merged[features].corr().round(2)
+plt.figure(figsize=(10, 8))
+sns.heatmap(corr, annot=True, cmap="coolwarm", fmt=".2f", vmin=-1, vmax=1)
+plt.title("Feature Correlation Matrix")
+plt.tight_layout()
+plt.show()
+
+def get_highly_correlated(corr_matrix, threshold=0.85):
+    corr_pairs = (
+        corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        .stack()
+        .reset_index()
+    )
+    corr_pairs.columns = ['Feature_1', 'Feature_2', 'Correlation']
+    high_corr = corr_pairs.loc[abs(corr_pairs['Correlation']) >= threshold]
+    return high_corr.sort_values(by='Correlation', ascending=False)
+
+# get a list of high-correlation pairs
+high_corr_pairs = get_highly_correlated(corr)
+print("Highly correlated feature pairs (|r| ≥ 0.85):")
+print(high_corr_pairs)
+```
+
+After adding them, I re-ran the entire pipeline:
+- GridSearch to find best hyperparameters
+- Time-aware cross-validation using `TimeSeriesSplit`
+- Applied `SMOTE` on the training folds only to handle class imbalance
+- Trained a logistic regression model
+- Used a fixed probability threshold of `0.36` (the result we got from earlier tuning!) instead of the default 0.5
+- Evaluated performance using **macro F1**, **weighted F1**, and **PR-AUC**
+
+## Tuned RandomForest
+
+### GridSearch
+
+```{python}
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "real_gva",
+    "usd_exchange", "eur_exchange", "cpih_to_gilt", "exchange_volatility"
+]
+target = "rate_change"
+
+# Clean data
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan).dropna()
+y = boe_merged.loc[X.index, target]
+
+# Define pipeline with SMOTE inside a custom function (GridSearch doesn't play well with SMOTE directly)
+from imblearn.pipeline import Pipeline as ImbPipeline
+
+pipeline = ImbPipeline(steps=[
+    ("scale", StandardScaler()),
+    ("smote", SMOTE(random_state=42)),
+    ("clf", RandomForestClassifier(random_state=42))
+])
+
+param_grid = {
+    "clf__n_estimators": [100, 200],
+    "clf__max_depth": [3, 5, 7],
+    "clf__min_samples_split": [2, 4],
+    "clf__min_samples_leaf": [1, 2]
+}
+
+# Time-aware CV
+tscv = TimeSeriesSplit(n_splits=5)
+
+# GridSearch
+grid = GridSearchCV(
+    pipeline,
+    param_grid,
+    cv=tscv,
+    scoring=make_scorer(f1_score, average="macro"),
+    n_jobs=-1,
+    verbose=1
+)
+
+grid.fit(X, y)
+
+print("Best Parameters:", grid.best_params_)
+print("Best Macro F1 Score:", round(grid.best_score_, 3))
+```
+
+### Adding GridSearch Parameters
+
+```{python}
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    f1_score, classification_report,
+    average_precision_score, precision_recall_curve
+)
+from imblearn.over_sampling import SMOTE
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+# Add engineered features
+boe_merged["real_gva"] = boe_merged["gva"] / boe_merged["cpih"]
+boe_merged["cpih_to_gilt"] = boe_merged["cpih"] / boe_merged["gilt_yield"]
+boe_merged["exchange_volatility"] = (boe_merged["usd_exchange"] - boe_merged["eur_exchange"]).abs()
+
+# Feature list and target
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "cpih", "gva",
+    "usd_exchange", "eur_exchange", "real_gva", "cpih_to_gilt", "exchange_volatility"
+]
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan).dropna()
+y = boe_merged.loc[X.index, "rate_change"]
+
+# Binary check
+assert sorted(y.unique()) == [-1, 1]
+
+# Setup
+tscv = TimeSeriesSplit(n_splits=5)
+final_probs, final_true = None, None
+threshold = 0.59  # from earlier threshold tuning
+metrics = []
+
+for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    sm = SMOTE(random_state=42)
+    X_train_bal, y_train_bal = sm.fit_resample(X_train_scaled, y_train)
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42
+    )
+    model.fit(X_train_bal, y_train_bal)
+
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+    y_pred = (y_proba >= threshold).astype(int) * 2 - 1
+
+    if fold == 4:
+        final_probs = y_proba
+        final_true = y_test
+
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
+    weighted_f1 = f1_score(y_test, y_pred, average="weighted")
+    pr_auc = average_precision_score((y_test == 1).astype(int), y_proba)
+
+    print(f"\nFold {fold+1} — Macro F1: {macro_f1:.3f}, Weighted F1: {weighted_f1:.3f}, PR-AUC: {pr_auc:.3f}")
+    print(classification_report(y_test, y_pred, digits=3))
+
+    metrics.append({
+        "Fold": fold + 1,
+        "Macro F1": macro_f1,
+        "Weighted F1": weighted_f1,
+        "PR-AUC": pr_auc
+    })
+
+# Threshold tuning on final fold
+true_bin = (final_true == 1).astype(int)
+prec, rec, thresh = precision_recall_curve(true_bin, final_probs)
+f1s = [f1_score(true_bin, (final_probs >= t).astype(int)) for t in thresh]
+best_thresh = thresh[np.argmax(f1s)]
+
+plt.figure(figsize=(6, 4))
+plt.plot(thresh, prec[:-1], label="Precision", color="red")
+plt.plot(thresh, rec[:-1], label="Recall", color="blue")
+plt.xlabel("Probability Threshold")
+plt.ylabel("Score")
+plt.title("Precision and Recall vs Threshold (Final Fold)")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.4)
+plt.tight_layout()
+plt.show()
+
+print(f"\nBest threshold by F1 on final fold: {best_thresh:.2f}")
+pd.DataFrame(metrics)
+
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+
+# Confusion matrix for this fold
+cm = confusion_matrix(y_test, y_pred, labels=[-1, 1])
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Cut (-1)", "Hike (+1)"])
+
+# Plot
+plt.figure(figsize=(5, 4))
+disp.plot(cmap="Blues")
+plt.title(f"Confusion Matrix — Fold {fold + 1}")
+plt.grid(False)
+plt.tight_layout()
+plt.show()
+```
+
+### Did the model get better?
+Yes, kind of!
+The results were… mixed but promising.
+- Fold 1 was an outlier success, with a Macro F1 of 1.00 and PR-AUC of 1.00. Both classes were predicted well here.
+- Fold 2 and 4 really struggled, with Macro F1s of 0.17 (basically, the model completely missed one class)
+- Fold 3 and 5 were somewhere in the middle, managing better class balance but still showing instability (a PR-AUC in 3 also suggests it could not be computed because there was only one class here)
+
+This performance volatility suggests that while the engineered features helped in some time slices, the underlying class imbalance and temporal shifts still make this a hard prediction task. That said, the weighted F1 scores remained high in some folds (e.g. 0.91 in Fold 1, 0.82 in Fold 3), which shows that the model is still detecting useful signal — just unevenly.
+
+```{python}
+# grab the final trained Random Forest model from the last fold
+final_rf_model = model 
+
+# features importance
+importances = final_rf_model.feature_importances_
+
+feat_imp_df = pd.DataFrame({
+    "Feature": X.columns,
+    "Importance": importances
+}).sort_values("Importance", ascending=True)
+
+# plot
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(8, 6))
+sns.barplot(data=feat_imp_df, x="Importance", y="Feature", palette="viridis")
+plt.title("Random Forest Feature Importances (Final Fold)")
+plt.tight_layout()
+plt.show()
+```
+
+## Real-GVA has 0 impact on our model
+So, I made the decision to remove it for future trainings. 
+
+### Are we just Undersampling Hikes?
+
+```{python}
+from imblearn.under_sampling import RandomUnderSampler
+
+# features
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "cpih", "gva",
+    "usd_exchange", "eur_exchange", "cpih_to_gilt", "exchange_volatility"
+]
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan).dropna()
+y = boe_merged.loc[X.index, "rate_change"]
+
+# binary classification check
+assert sorted(y.unique()) == [-1, 1]
+
+# time-aware split
+tscv = TimeSeriesSplit(n_splits=5)
+final_probs, final_true = None, None
+threshold = 0.59  # Use prior tuned threshold (or re-tune later if needed)
+
+metrics = []
+
+for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+    X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+    y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Undersample majority class (hikes) in training set
+    rus = RandomUnderSampler(random_state=42)
+    X_train_bal, y_train_bal = rus.fit_resample(X_train_scaled, y_train)
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        random_state=42
+    )
+    model.fit(X_train_bal, y_train_bal)
+
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+    y_pred = (y_proba >= threshold).astype(int) * 2 - 1
+
+    if fold == 4:
+        final_probs = y_proba
+        final_true = y_test
+
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
+    weighted_f1 = f1_score(y_test, y_pred, average="weighted")
+    pr_auc = average_precision_score((y_test == 1).astype(int), y_proba)
+
+    print(f"\nFold {fold+1} — Macro F1: {macro_f1:.3f}, Weighted F1: {weighted_f1:.3f}, PR-AUC: {pr_auc:.3f}")
+    print(classification_report(y_test, y_pred, digits=3))
+
+    metrics.append({
+        "Fold": fold + 1,
+        "Macro F1": macro_f1,
+        "Weighted F1": weighted_f1,
+        "PR-AUC": pr_auc
+    })
+
+# plotting PR vs Threshold
+true_bin = (final_true == 1).astype(int)
+prec, rec, thresh = precision_recall_curve(true_bin, final_probs)
+f1s = [f1_score(true_bin, (final_probs >= t).astype(int)) for t in thresh]
+best_thresh = thresh[np.argmax(f1s)]
+
+plt.figure(figsize=(6, 4))
+plt.plot(thresh, prec[:-1], label="Precision", color="red")
+plt.plot(thresh, rec[:-1], label="Recall", color="blue")
+plt.xlabel("Probability Threshold")
+plt.ylabel("Score")
+plt.title("Precision and Recall vs Threshold (Final Fold)")
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.4)
+plt.tight_layout()
+plt.show()
+
+print(f"\nBest threshold based on final fold F1 score: {best_thresh:.2f}")
+pd.DataFrame(metrics)
+```
+
+## Is there any way to improve the model?
+
+I read up on some literature, and included **Nominal GDP** (instead of GVA that we had earlier) to see if this sparked changes.
+- I hypothesised that looking at nominal gdp more directly could help.
+- I pulled the variable from the UKNGDP dataset from the Federal Bank of St. Louis, which had ready to use GDP data grouped by quarter!
+- Dataset here: https://fred.stlouisfed.org/series/UKNGDP
+
+### Did it work?
+While the variable theoretically explains rate changes (higher GDP often leads to rate hikes, lower GDP to rate cuts), 
+it didn’t significantly impact model performance. It did however, have the second highest feature importance, 
+so we can be confident that gdp is more stronger as a predictor than gva. 
+
+```{python}
+# merging quarterly gdp data
+gdp_df = pd.read_csv("~/Desktop/UKNGDP.csv", parse_dates=["observation_date"])
+
+boe_merged.dropna(subset=["nominal_gdp"], inplace=True)
+
+gdp_df.rename(columns={"observation_date": "Date", "UKNGDP": "nominal_gdp"}, inplace=True)
+boe_merged = pd.merge_asof(
+    boe_merged.sort_values("Date"),
+    gdp_df.sort_values("Date"),
+    on="Date",
+    direction="backward")
+```
+
+```{python}
+import warnings
+warnings.filterwarnings('ignore')
+
+#features list
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "usd_exchange", "eur_exchange",
+    "cpih_to_gilt", "exchange_volatility", "nominal_gdp"
+]
+target = "rate_change"
+
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan).dropna()
+y = boe_merged.loc[X.index, target]
+
+# 70-30 split
+cutoff = int(len(X) * 0.7)
+X_train, X_test = X.iloc[:cutoff], X.iloc[cutoff:]
+y_train, y_test = y.iloc[:cutoff], y.iloc[cutoff:]
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# training our rf model
+model = RandomForestClassifier(
+    n_estimators=100,
+    max_depth=5,
+    class_weight="balanced",
+    random_state=42
+)
+model.fit(X_train_scaled, y_train)
+
+#prediction and tuning
+y_proba = model.predict_proba(X_test_scaled)[:, 1]
+true_bin = (y_test == 1).astype(int)
+prec, rec, thresh = precision_recall_curve(true_bin, y_proba)
+f1s = [f1_score(true_bin, (y_proba >= t).astype(int)) for t in thresh]
+best_thresh = thresh[np.argmax(f1s)]
+
+# final prediction using best threshold
+y_pred = (y_proba >= best_thresh).astype(int) * 2 - 1
+print(f"\nBest threshold based on F1: {best_thresh:.2f}")
+print("\nClassification Report:\n", classification_report(y_test, y_pred, digits=3))
+
+# conufsion matrix
+cm = confusion_matrix(y_test, y_pred, labels=[-1, 1])
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Cut", "Hike"])
+disp.plot(cmap="Blues")
+plt.title("Confusion Matrix (70/30 Time-Aware Split)")
+plt.grid(False)
+plt.tight_layout()
+plt.show()
+```
+
+### HistGradientBoosting Model
+
+### Why HistGradientBoosting?
+- **HistGradientBoosting** was selected for its **efficiency** and ability in handling non-linear relationships.
+- While it performed **better** in some contexts, it didn’t outperform **Random Forest** for this problem
+- I used a 70/30 split (that was time-aware!), and implemented smote to address the class imbalance. 
+- Still, it seems as though this model performs worse than our Random Forest, and classifies everything as a cut. 
+
+```{python}
+### HistGradientBoosting Model
+features = [
+    "cci", "unemployment_rate", "gilt_yield", "usd_exchange", "eur_exchange",
+    "cpih_to_gilt", "exchange_volatility", "nominal_gdp"
+]
+target = "rate_change"
+
+X = boe_merged[features].replace([np.inf, -np.inf], np.nan).dropna()
+y = boe_merged.loc[X.index, target]
+
+# 70/30 
+cutoff = int(len(X) * 0.7)
+X_train, X_test = X.iloc[:cutoff], X.iloc[cutoff:]
+y_train, y_test = y.iloc[:cutoff], y.iloc[cutoff:]
+
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+smote = SMOTE(random_state=42)
+model = HistGradientBoostingClassifier(random_state=42)
+pipe = ImbPipeline([
+    ('smote', smote),
+    ('scaler', StandardScaler()),
+    ('model', model)
+])
+
+pipe.fit(X_train, y_train)
+
+# evaluating
+y_pred = pipe.predict(X_test)
+y_proba = pipe.predict_proba(X_test)[:, 1]
+
+print(classification_report(y_test, y_pred, digits=3))
+
+# matrix
+cm = confusion_matrix(y_test, y_pred, labels=[-1, 1])
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Cut", "Hike"])
+disp.plot(cmap="Blues")
+plt.title("Confusion Matrix (Final 70/30 Split)")
+plt.tight_layout()
+plt.show()
+
+# roc-auc
+roc_auc = roc_auc_score(y_test, y_proba)
+print(f"ROC AUC: {roc_auc:.3f}")
+```
+
+## Is it just the social and economic change and dataset size affecting model predictions?
+
+the results left me wondering: Why is every model either predicting just cuts or just hikes? 
+- Especially when we have accounted for time series, missingness, AND added some features that did turn out to have importantce!
+
+- After digging deeper, I started thinking: Could it be that social contexts are so different that it makes predicting these rate changes hard? The BoE’s rate decisions are heavily influenced by broader economic conditions which makes it really tricky to predict rate changes in isolation.
+
+So, I decided to use K-means clustering to group rate changes, using `sklearn.cluster`.
+
+#### Basically, what I'm asking is this: is it the nature of our data that makes future predictions difficult?
+
+And in a way, yes! Clustering results showed a cyclic pattern, and the data limitations were clear:
+- Small dataset: There just isn’t enough data to create meaningful clusters that separate cuts and hikes effectively. (with 67 rows, it is a small set for most models to effectively work with)
+- Temporal/Regime changes: These changes, not specific trends or features, could be the real driving force behind rate decisions. 
+
+[NB: This could be a reason why models with time series split did marginally better than the 70/30 splits!]
+
+Ultimately though, this suggests that economic regimes have more of an impact on rate decisions than the individual data points/features.
+
+```{python}
+from sklearn.cluster import KMeans
+
+macro_features = ["cci", "unemployment_rate", "gilt_yield", "cpih", "gva", "usd_exchange", "eur_exchange"]
+macro_df = boe_merged[macro_features].dropna()
+
+scaler = StandardScaler()
+scaled_macro = scaler.fit_transform(macro_df)
+
+kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
+regimes = kmeans.fit_predict(scaled_macro)
+boe_merged.loc[macro_df.index, "regime_cluster"] = regimes
+
+# Plotting clusters over time
+boe_merged["Date"] = pd.to_datetime(boe_merged["Date"])  # ensure Date is datetime
+plot_df = boe_merged.loc[macro_df.index]
+
+plt.figure(figsize=(14, 3))
+sns.scatterplot(data=plot_df, x="Date", y=["Regime"] * len(plot_df),
+                hue="regime_cluster", palette="Set2", s=50)
+plt.title("Macroeconomic Regimes Over Time (KMeans Clustering)")
+plt.xlabel("Date")
+plt.yticks([])
+plt.grid(True, linestyle="--", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+### Final thoughts and takeaways
+
+After experimenting with different models, and trying out two main additions, (a) feature engineering and (b) adding GDP:
+- I found that **Random Forest (RF)** outperformed **Linear Regression** for this task. 
+- Adding **Nominal GDP** into the model marginally boosted performance, giving us a slight improvement in accuracy (but not a lot!) 
+- Overall, our RF movel with the TimeSeriesSplit, did a better job at capturing the complex relationships between economic indicators and 
+interest rate changes, compared to Linear Regression.
+
+However, when I tried **HistGradientBoosting** (Hist), it didn’t perform as well as RF. 
+Even though it has strengths in handling non-linear relationships, it didn’t manage to outshine RF in predicting rate changes, 
+especially when distinguishing between cuts and hikes. 
+
+It became clear that RF was the better model, especially since it was more reliable in predicting hikes correctly!
+[even though it struggled with cuts, we got better accuracy and macro F1 scores here than in HistGradientBoosting or regressions.
+
+I think that a big factor in the model’s performance is the **class imbalance** in the data:
+- With only **67 rows**, the small dataset didn’t give the model enough information to make solid predictions.
+- Moreover, what seems like a small imbalance can magnify prediction errors due to the size of the dataset. 
+- Plus the **cyclic nature** of the rate changes we saw in clustering meant that the model wasn’t capturing the full picture.
+To improve accuracy, we would likely need to use more frequent data points (e.g., monthly or weekly).
+
+In short, while RF is currently the best performer, the **data limitations** and **class imbalance** are holding us back. 
+
+*References:*  
+- Hyndman, R. J., & Athanasopoulos, G. (2018). *Forecasting: principles and practice* (2nd ed). 
+- Quionero-Candela, J., Sugiyama, M., Schwaighofer, A., & Lawrence, N. D. (2009). *Dataset Shift in Machine Learning*. The MIT Press.
+- Osborne, J. W. (2010). *Improving your data transformations: Applying the Box-Cox transformation*.  
+
+### AI Use Statement
+
+For this project, ChatGPT was primarily used in helping **debug code**, and in **improving visualisations**. 
+- I used it for question 3 to understand the theory behind certain model choices, particularly around `SMOTE` and class imbalance issues. 
+- I used it to understand, and basically bounce off ideas around the 70/30 split and the `TimeSeriesSplit` since I realised the modelling would benefit from a different method of splitting training sets, but was unsure of *how* we should split them. So, ChatGPT helped me learn the logic behind `TimeSeriesSplit` and how to implement it. 
+- I also used it to make the visualisation of all model metrics and also in finding the Git package (I asked it about optimising model search, and read up on the packages available and decided to pick `lazypredict`)
+- I asked it to find me a dataset for GDP by quarter and it gave me a list out of which I chose **FRED**'s quarterly GDP values dataset, and made my `nominal_gdp` feature.
+

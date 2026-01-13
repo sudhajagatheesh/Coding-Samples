@@ -1,5 +1,5 @@
 # What is this repo?
-Hi! This repo is a collection of my various coding projects and research work. It is broken down into three sections (a) my thesis code (and datasets for replication!), (b) my LSE coding assessments, and (c) my SSE final data science assessment. 
+Hi! This repo is a collection of my various coding projects and research work. It is broken down into five sections. 
 
 ## (a) Thesis Code
 The code for my thesis is broken down into *two* Jupyter codebooks. 
